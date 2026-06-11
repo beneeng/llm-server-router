@@ -17,6 +17,7 @@ class ModelDefaults(BaseModel):
     repetition_penalty: float | None = None
     repetition_context_size: int | None = None
     max_tokens: int | None = None
+    thinking_token_budget: int | None = None
 
     def as_request_fields(self) -> dict[str, Any]:
         """Return only the fields that have non-None values."""

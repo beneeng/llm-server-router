@@ -16,6 +16,7 @@ dependencies = [
     "typer>=0.12",
     "rich>=13.0",
     "vllm-mlx>=0.4.0rc1",
+    "psutil>=5.9",
 ]
 
 [project.scripts]

@@ -172,6 +172,49 @@ def logs(
         pass
 
 
+@app.command(name="memory")
+def memory_cmd() -> None:
+    """Show per-model RSS memory usage."""
+    import psutil
+    from .manager import _is_alive, _load_pids
+
+    cfg = load_config()
+    pids = _load_pids()
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Name")
+    table.add_column("Status")
+    table.add_column("PID", justify="right")
+    table.add_column("RSS (GB)", justify="right")
+    table.add_column("Protected")
+
+    total_gb = 0.0
+    for m in cfg.models:
+        pid = pids.get(m.name)
+        alive = bool(pid and _is_alive(pid))
+        rss_gb = 0.0
+        if alive and pid:
+            try:
+                rss_gb = psutil.Process(pid).memory_info().rss / (1024 ** 3)
+                total_gb += rss_gb
+            except psutil.NoSuchProcess:
+                alive = False
+        table.add_row(
+            m.name,
+            "[green]running[/green]" if alive else "[red]stopped[/red]",
+            str(pid) if pid else "—",
+            f"{rss_gb:.2f}" if alive else "—",
+            "✓" if m.protected else "",
+        )
+
+    cap = cfg.max_total_memory_gb
+    cap_str = f" / {cap:.1f} GB cap" if cap else ""
+    console.print(table)
+    console.print(f"\nTotal model RSS: [bold]{total_gb:.2f} GB[/bold]{cap_str}")
+    if cap and total_gb > cap:
+        console.print(f"[yellow]Over cap by {total_gb - cap:.2f} GB — eviction pending on next request[/yellow]")
+
+
 @app.command(name="models")
 def list_models() -> None:
     """List models defined in the config."""

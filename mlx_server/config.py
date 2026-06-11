@@ -36,6 +36,7 @@ class ModelConfig(BaseModel):
     #   ["--default-chat-template-kwargs", '{"enable_thinking": false}']
     extra_args: list[str] = []
     defaults: ModelDefaults = ModelDefaults()
+    protected: bool = False
     # Assigned at load time by ServerConfig
     port: int = 0
 
@@ -59,6 +60,7 @@ class ServerConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 6300
     base_port: int = 6301
+    max_total_memory_gb: float | None = None
     models: list[ModelConfig] = []
 
     @model_validator(mode="after")

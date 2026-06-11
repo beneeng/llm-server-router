@@ -81,6 +81,7 @@ def _prerender_gemma4_tool_history(messages: list[dict]) -> list[dict]:
     return result
 
 import httpx
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -94,11 +95,11 @@ def _backend_unavailable(model_name: str, port: int) -> JSONResponse:
     )
 
 from .config import ServerConfig, load_config
-
-app = FastAPI()
+from .memory import MemoryManager
 
 # Loaded once at startup; re-read the file on SIGHUP if you want hot reload.
 _cfg: ServerConfig | None = None
+_mem: MemoryManager | None = None
 
 
 def _config() -> ServerConfig:
@@ -106,6 +107,22 @@ def _config() -> ServerConfig:
     if _cfg is None:
         _cfg = load_config()
     return _cfg
+
+
+def _memory_manager() -> MemoryManager:
+    global _mem
+    if _mem is None:
+        _mem = MemoryManager(_config())
+    return _mem
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _memory_manager()  # create asyncio.Lock on the running event loop
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 # ── /v1/models ────────────────────────────────────────────────────────────────
@@ -156,6 +173,18 @@ async def proxy(path: str, request: Request) -> Response:
                     "type": "invalid_request_error",
                 }
             },
+        )
+
+    # --- on-demand start + LRU eviction ---
+    try:
+        await _memory_manager().ensure_model_ready(model_name)
+    except Exception as exc:
+        return JSONResponse(
+            status_code=503,
+            content={"error": {
+                "message": f"Failed to start model '{model_name}': {exc}",
+                "type": "service_unavailable",
+            }},
         )
 
     # --- inject default hyperparams (caller values win) + rewrite model alias ---

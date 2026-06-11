@@ -134,6 +134,9 @@ All Gemma 4 variants have a structural repetition-collapse bug in the MoE attent
 
 **Consequence:** Gemma 4 is excluded from opencode and any agentic harness that injects tool schemas. Use it via Pi harness or Open WebUI with a short system prompt and no tools.
 
+### vllm-mlx 0.4.0rc1 MLLM tool history bug (router workaround active)
+`MLLM.stream_chat` drops assistant messages with `content=null` even when `tool_calls` is present, so tool-call history is invisible to the model and it loops forever. The router pre-renders tool call + response tokens into the assistant content string as native Gemma4 special tokens before forwarding. See [`TODO.md`](TODO.md) for revert instructions once the upstream fix lands.
+
 ### vllm-mlx 0.4.0rc1 continuous batching bug
 `patch_gemma4_attention_for_batching` doesn't forward the `shared_kv` argument introduced in mlx-vlm 0.6.2. All Gemma 4 models run with `continuous_batching: false` until this is fixed upstream.
 

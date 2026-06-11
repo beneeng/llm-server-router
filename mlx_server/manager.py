@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -60,7 +61,17 @@ def _is_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
         return True
-    except (ProcessLookupError, PermissionError):
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # process exists, we just can't signal it
+
+
+def _port_bound(port: int) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            return True
+    except OSError:
         return False
 
 
@@ -76,6 +87,12 @@ def start_model(model: ModelConfig) -> int:
     if model.name in pids and _is_alive(pids[model.name]):
         return pids[model.name]
 
+    if _port_bound(model.port):
+        raise RuntimeError(
+            f"Port {model.port} is already in use. "
+            f"Stop whatever is using it before starting {model.name}."
+        )
+
     log = _log_path(model.name)
     with log.open("a") as fh:
         proc = subprocess.Popen(
@@ -83,6 +100,13 @@ def start_model(model: ModelConfig) -> int:
             stdout=fh,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+        )
+
+    # Brief pause to catch immediate failures (e.g. bad args)
+    time.sleep(0.3)
+    if not _is_alive(proc.pid):
+        raise RuntimeError(
+            f"Process for {model.name} exited immediately. Check: mlx logs {model.name}"
         )
 
     pids[model.name] = proc.pid
@@ -98,6 +122,12 @@ def start_router(cfg: ServerConfig) -> int:
     if ROUTER_NAME in pids and _is_alive(pids[ROUTER_NAME]):
         return pids[ROUTER_NAME]
 
+    if _port_bound(cfg.port):
+        raise RuntimeError(
+            f"Port {cfg.port} is already in use. "
+            "Run 'mlx stop --router' first, or kill whatever is on that port."
+        )
+
     log = _log_path(ROUTER_NAME)
     with log.open("a") as fh:
         proc = subprocess.Popen(
@@ -111,6 +141,12 @@ def start_router(cfg: ServerConfig) -> int:
             stdout=fh,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+        )
+
+    time.sleep(0.3)
+    if not _is_alive(proc.pid):
+        raise RuntimeError(
+            f"Router exited immediately. Check: mlx logs"
         )
 
     pids[ROUTER_NAME] = proc.pid

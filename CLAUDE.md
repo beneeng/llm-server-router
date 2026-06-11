@@ -59,7 +59,11 @@ For streaming requests, the `httpx.AsyncClient` **must** be opened inside `_stre
 
 **Gemma 4 `continuous_batching: false`** — `vllm-mlx` 0.4.0rc1's `patch_gemma4_attention_for_batching` doesn't forward the `shared_kv` kwarg from `mlx-vlm` 0.6.2, crashing on any batched request. All Gemma4 models in config have `continuous_batching: false`. Do not re-enable until a vllm-mlx upstream fix is confirmed.
 
-**Gemma 4 repetition collapse** — structural model bug triggered by large system prompts (>10K chars), many tool definitions (>5-6), or long context. Not fixable with `repetition_penalty` (hence `1.0` in config). Gemma is excluded from opencode (`~/.config/opencode/opencode_local.json` has only Qwen models in `mlx-router` provider). Use Gemma only via Pi harness or direct curl with short prompts and no tools.
+**Gemma 4 tool-call format** — Gemma4 emits tool calls in a custom non-JSON format (`<|tool_call>` / `<tool_call|>` delimiters, `<|"|>` string escaping, unquoted keys). Without `--enable-auto-tool-choice --tool-call-parser gemma4` (set in `extra_args` for all Gemma4 models), vllm-mlx does not parse these as tool calls — the model gets no result back and retries forever.
+
+**Gemma 4 MLLM tool history bug (router workaround)** — vllm-mlx 0.4.0rc1's `MLLM.stream_chat` silently drops assistant messages where `content=null`, even when `tool_calls` is present. Gemma4 models are always loaded as MLLM. The result is the model sees only the original user message on every turn and loops. **Fix**: `router.py:_prerender_gemma4_tool_history()` pre-renders tool call + response tokens directly into the assistant message `content` string using native Gemma4 special tokens (`<|tool_call>`, `<|tool_response>`, `<|"|>`), which the tokenizer correctly encodes. Applied for all `multimodal: true` models before forwarding.
+
+**Gemma 4 repetition collapse** — separate structural bug triggered by large system prompts (>10K chars) or many tool definitions (>5-6). Not fixable with `repetition_penalty`. Gemma is excluded from opencode; use via Pi harness or direct curl.
 
 **Qwen3 temperature=0 prohibition** — vendor docs prohibit `temperature: 0` in thinking mode; minimum 0.6 for `qwen3.6-moe`, 0.2 for `qwen3.6-27b`.
 

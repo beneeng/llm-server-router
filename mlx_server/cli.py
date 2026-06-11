@@ -56,10 +56,21 @@ def _wait_for_port(port: int, timeout: float = 30.0) -> bool:
 @app.command()
 def start(
     model: Optional[str] = typer.Option(None, "--model", "-m", help="Start only this model"),
+    router: bool = typer.Option(False, "--router", help="Start only the router"),
     wait: bool = typer.Option(True, "--wait/--no-wait", help="Wait for ports to be ready"),
 ) -> None:
     """Start model servers and the router."""
     cfg = load_config()
+
+    if router:
+        pid = start_router(cfg)
+        console.print(f"  [cyan]{ROUTER_NAME}[/cyan]  pid={pid}  port={cfg.port}")
+        if wait:
+            if _wait_for_port(cfg.port):
+                console.print(f"  [green]✓[/green] router ready at http://{cfg.host}:{cfg.port}")
+            else:
+                console.print(f"  [yellow]⚠[/yellow] router port {cfg.port} not responding — check logs")
+        return
 
     targets = [m for m in cfg.models if model is None or m.name == model]
     if model and not targets:
@@ -75,7 +86,7 @@ def start(
             else:
                 console.print(f"  [yellow]⚠[/yellow] {m.name} port {m.port} not responding after 30s — check logs")
 
-    # Only start the router when starting all models (or explicitly without --model)
+    # Only start the router when starting all models (not when --model is given)
     if model is None:
         pid = start_router(cfg)
         console.print(f"  [cyan]{ROUTER_NAME}[/cyan]  pid={pid}  port={cfg.port}")
@@ -89,9 +100,17 @@ def start(
 @app.command()
 def stop(
     model: Optional[str] = typer.Option(None, "--model", "-m", help="Stop only this model"),
+    router: bool = typer.Option(False, "--router", help="Stop only the router"),
 ) -> None:
     """Stop model servers and the router."""
     cfg = load_config()
+
+    if router:
+        if stop_process(ROUTER_NAME):
+            console.print(f"  stopped [cyan]{ROUTER_NAME}[/cyan]")
+        else:
+            console.print(f"  [yellow]{ROUTER_NAME} was not running[/yellow]")
+        return
 
     if model is None:
         # Stop router first so it stops accepting traffic

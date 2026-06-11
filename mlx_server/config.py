@@ -38,6 +38,14 @@ class ModelConfig(BaseModel):
     extra_args: list[str] = []
     defaults: ModelDefaults = ModelDefaults()
     protected: bool = False
+    # When True, mlx start skips this model; it is started on the first request
+    # via MemoryManager.ensure_model_ready().  mlx start --model NAME ignores
+    # this flag and starts the model explicitly regardless.
+    lazy: bool = False
+    # Expected total footprint (weights + KV cache) in GB. Used for pre-eviction
+    # budgeting: we clear this much room BEFORE starting the model. Set conservatively
+    # (i.e. larger than actual weights) to account for KV-cache pre-allocation.
+    memory_gb: float | None = None
     # Assigned at load time by ServerConfig
     port: int = 0
 
@@ -62,6 +70,10 @@ class ServerConfig(BaseModel):
     port: int = 6300
     base_port: int = 6301
     max_total_memory_gb: float | None = None
+    # Hard floor: refuse to start a model (503) when free system RAM would drop
+    # below this after loading. Backstop against swap/OOM when cap alone is not
+    # enough (e.g. KV-cache spikes during the first inference pass).
+    min_free_memory_gb: float = 8.0
     models: list[ModelConfig] = []
 
     @model_validator(mode="after")

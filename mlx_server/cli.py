@@ -72,7 +72,10 @@ def start(
                 console.print(f"  [yellow]⚠[/yellow] router port {cfg.port} not responding — check logs")
         return
 
-    targets = [m for m in cfg.models if model is None or m.name == model]
+    targets = [
+        m for m in cfg.models
+        if (model is None or m.name == model) and (model is not None or not m.lazy)
+    ]
     if model and not targets:
         console.print(f"[red]Unknown model: {model}[/red]")
         raise typer.Exit(1)
@@ -207,12 +210,16 @@ def memory_cmd() -> None:
             "✓" if m.protected else "",
         )
 
+    free_gb = psutil.virtual_memory().available / (1024 ** 3)
     cap = cfg.max_total_memory_gb
     cap_str = f" / {cap:.1f} GB cap" if cap else ""
+    floor = cfg.min_free_memory_gb
     console.print(table)
-    console.print(f"\nTotal model RSS: [bold]{total_gb:.2f} GB[/bold]{cap_str}")
+    console.print(f"\nTotal model RSS: [bold]{total_gb:.2f} GB[/bold]{cap_str}   Free RAM: [bold]{free_gb:.1f} GB[/bold] (floor {floor:.1f} GB)")
     if cap and total_gb > cap:
         console.print(f"[yellow]Over cap by {total_gb - cap:.2f} GB — eviction pending on next request[/yellow]")
+    if free_gb < floor:
+        console.print(f"[red]Free RAM {free_gb:.1f} GB below floor {floor:.1f} GB — new model starts will be refused[/red]")
 
 
 @app.command(name="models")
@@ -224,6 +231,7 @@ def list_models() -> None:
     table.add_column("Name")
     table.add_column("Source")
     table.add_column("Port", justify="right")
+    table.add_column("Lazy")
     table.add_column("Multimodal")
     table.add_column("Reasoning parser")
     table.add_column("Defaults (temp / top_p / top_k / rep_pen / max_tok)")
@@ -234,6 +242,7 @@ def list_models() -> None:
             m.name,
             m.source,
             str(m.port),
+            "✓" if m.lazy else "",
             "✓" if m.multimodal else "",
             m.reasoning_parser or "",
             f"{d.temperature} / {d.top_p} / {d.top_k} / {d.repetition_penalty} / {d.max_tokens}",

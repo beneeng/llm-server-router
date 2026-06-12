@@ -15,7 +15,7 @@ class ModelDefaults(BaseModel):
     top_p: float | None = None
     top_k: int | None = None
     repetition_penalty: float | None = None
-    repetition_context_size: int | None = None
+    min_p: float | None = None
     max_tokens: int | None = None
     thinking_token_budget: int | None = None
 
@@ -36,6 +36,9 @@ class ModelConfig(BaseModel):
     # Arbitrary extra flags forwarded verbatim to vllm-mlx serve, e.g.:
     #   ["--default-chat-template-kwargs", '{"enable_thinking": false}']
     extra_args: list[str] = []
+    # Server-level repetition context window passed to mlx_lm via vllm_wrapper.
+    # vllm-mlx has no API for this; mlx_lm's hardcoded default is 20.
+    repetition_context_size: int | None = None
     defaults: ModelDefaults = ModelDefaults()
     protected: bool = False
     # When True, mlx start skips this model; it is started on the first request
@@ -54,7 +57,12 @@ class ModelConfig(BaseModel):
 
     def vllm_args(self) -> list[str]:
         from .manager import _bin
-        args = [_bin("vllm-mlx"), "serve", self.source, "--port", str(self.port)]
+        from pathlib import Path as _Path
+        wrapper = str(_Path(__file__).parent / "vllm_wrapper.py")
+        args = [_bin("python3"), wrapper]
+        if self.repetition_context_size is not None:
+            args += ["--repetition-context-size", str(self.repetition_context_size)]
+        args += ["serve", self.source, "--port", str(self.port)]
         if self.continuous_batching:
             args.append("--continuous-batching")
         if self.multimodal:

@@ -218,6 +218,25 @@ async def proxy(path: str, request: Request) -> Response:
                         and msg.get("content") is not None
                     ):
                         msg["content"] = None
+            else:
+                # For text-only models (Qwen): normalize Gemma4-format tool call
+                # tokens that Pi may have stored as assistant content from a prior
+                # failed parse. The AutoToolParser's Gemma4 step fires on
+                # <|tool_call> but fails on Qwen-style JSON args, leaving the raw
+                # text in Pi's history; the model then imitates the wrong format.
+                # Converting <|tool_call>/<tool_call|> → <tool_call>/</tool_call>
+                # lets the QwenToolParser handle it on the next turn.
+                for msg in body["messages"]:
+                    if (
+                        msg.get("role") == "assistant"
+                        and isinstance(msg.get("content"), str)
+                        and "<|tool_call>" in msg["content"]
+                    ):
+                        msg["content"] = (
+                            msg["content"]
+                            .replace("<|tool_call>", "<tool_call>")
+                            .replace("<tool_call|>", "</tool_call>")
+                        )
 
         body_bytes = json.dumps(body).encode()
 

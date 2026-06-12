@@ -75,6 +75,8 @@ For streaming requests, the `httpx.AsyncClient` **must** be opened inside `_stre
 
 **Gemma 4 repetition collapse** — separate structural bug triggered by large system prompts (>10K chars) or many tool definitions (>5-6). Not fixable with `repetition_penalty`. Gemma is excluded from opencode; use via Pi harness or direct curl.
 
+**Qwen3 tool-call parser (AutoToolParser cross-contamination)** — Without `--enable-auto-tool-choice --tool-call-parser qwen`, vllm-mlx falls back to `AutoToolParser("auto")` which tries the Gemma4 format (`<|tool_call>`) *first*. When qwen3.6-moe occasionally generates `<|tool_call>` format (4-bit quantization artifact), the Gemma4 parser fires and fails silently — the tool call content is suppressed, Pi sees the stream end without a `finish_reason`, and reports "output stopped". **Fix**: all Qwen models have `--enable-auto-tool-choice --tool-call-parser qwen` in `extra_args`, which uses `QwenToolParser` directly. The router also normalizes `<|tool_call>` → `<tool_call>` / `<tool_call|>` → `</tool_call>` in assistant message history for non-multimodal models, breaking the feedback loop where Pi stores the malformed content and the model imitates the wrong format.
+
 **Qwen3 temperature=0 prohibition** — vendor docs prohibit `temperature: 0` in thinking mode; minimum 0.6 for `qwen3.6-moe`, 0.2 for `qwen3.6-27b`.
 
 **Router config is loaded once at startup** — `_cfg` in `router.py` is a module-level singleton. Config changes require restarting the router process (`mlx stop` then `mlx start`). There is no hot-reload.

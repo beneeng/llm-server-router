@@ -15,6 +15,16 @@ One-time config setup:
 mkdir -p ~/.config/mlx && cp config/models.yaml ~/.config/mlx/models.yaml
 ```
 
+## Automated tests
+
+```bash
+~/.local/share/uv/tools/mlx-server/bin/python -m pytest tests/test_patches.py -v
+```
+
+Tests must run under the tool venv python (not system python) because `vllm_mlx` and `mlx_lm` are installed there. `pytest` is installed in that venv; if missing run `~/.local/share/uv/tools/mlx-server/bin/python -m pip install pytest`.
+
+`tests/test_patches.py` covers both monkey-patches in `vllm_wrapper.py`: for each patch there is a "without patch" test that reproduces the known failure mode, and a "with patch" test that confirms it is gone.
+
 ## Running / testing manually
 
 ```bash

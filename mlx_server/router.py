@@ -197,7 +197,8 @@ async def proxy(path: str, request: Request) -> Response:
         body["model"] = model_cfg.source
 
         if "messages" in body:
-            if model_cfg.multimodal:
+            gemma4_model = "gemma4" in model_name.lower()
+            if gemma4_model:
                 # vllm-mlx's MLLM.stream_chat drops assistant messages with
                 # content=null even when tool_calls is present, so the Gemma4
                 # chat template never sees the tool history and the model loops.
@@ -205,8 +206,8 @@ async def proxy(path: str, request: Request) -> Response:
                 # so the MLLM path includes the message and the tokenizer encodes
                 # the special tokens correctly.
                 body["messages"] = _prerender_gemma4_tool_history(body["messages"])
-            else:
-                # For LLM (non-multimodal) models: strip content from assistant
+            elif model_cfg.multimodal:
+                # For non-Gemma4 multimodal models: strip content from assistant
                 # messages that also carry tool_calls. Some clients store both
                 # the raw streamed text and tool_calls on the same entry; the
                 # chat template would then emit the tool call twice.

@@ -177,17 +177,19 @@ def logs(
 
 @app.command(name="memory")
 def memory_cmd() -> None:
-    """Show per-model RSS memory usage."""
+    """Show per-model memory usage and system memory pressure."""
     import psutil
     from .manager import _is_alive, _load_pids
 
     cfg = load_config()
     pids = _load_pids()
+    vm = psutil.virtual_memory()
 
     table = Table(show_header=True, header_style="bold")
     table.add_column("Name")
     table.add_column("Status")
     table.add_column("PID", justify="right")
+    table.add_column("Est. GB", justify="right")
     table.add_column("RSS (GB)", justify="right")
     table.add_column("Protected")
 
@@ -198,7 +200,7 @@ def memory_cmd() -> None:
         rss_gb = 0.0
         if alive and pid:
             try:
-                rss_gb = psutil.Process(pid).memory_info().rss / (1024 ** 3)
+                rss_gb = psutil.Process(pid).memory_info().rss / 1e9
                 total_gb += rss_gb
             except psutil.NoSuchProcess:
                 alive = False
@@ -206,16 +208,36 @@ def memory_cmd() -> None:
             m.name,
             "[green]running[/green]" if alive else "[red]stopped[/red]",
             str(pid) if pid else "—",
+            f"{m.memory_gb:.0f}" if m.memory_gb else "?",
             f"{rss_gb:.2f}" if alive else "—",
             "✓" if m.protected else "",
         )
 
-    free_gb = psutil.virtual_memory().available / (1024 ** 3)
+    total_ram_gb = vm.total / 1e9
+    free_gb = vm.available / 1e9
+    used_gb = (vm.total - vm.available) / 1e9
+    wired_gb = getattr(vm, "wired", 0) / 1e9
+
     cap = cfg.max_total_memory_gb
     cap_str = f" / {cap:.1f} GB cap" if cap else ""
     floor = cfg.min_free_memory_gb
+
     console.print(table)
-    console.print(f"\nTotal model RSS: [bold]{total_gb:.2f} GB[/bold]{cap_str}   Free RAM: [bold]{free_gb:.1f} GB[/bold] (floor {floor:.1f} GB)")
+    console.print(f"\nModels RSS : [bold]{total_gb:.2f} GB[/bold]{cap_str}")
+    console.print(
+        f"System RAM : {used_gb:.1f} GB used  |  wired {wired_gb:.1f} GB"
+        f"  |  free {free_gb:.1f} GB  |  total {total_ram_gb:.0f} GB  ({vm.percent:.0f}% used)"
+    )
+
+    try:
+        out = subprocess.check_output(["memory_pressure"], timeout=3, text=True, stderr=subprocess.DEVNULL)
+        for line in out.splitlines():
+            if "pressure" in line.lower() or "free percentage" in line.lower():
+                console.print(f"Pressure   : {line.strip()}")
+                break
+    except Exception:
+        pass
+
     if cap and total_gb > cap:
         console.print(f"[yellow]Over cap by {total_gb - cap:.2f} GB — eviction pending on next request[/yellow]")
     if free_gb < floor:
@@ -232,9 +254,7 @@ def list_models() -> None:
     table.add_column("Source")
     table.add_column("Port", justify="right")
     table.add_column("Lazy")
-    table.add_column("Multimodal")
-    table.add_column("Reasoning parser")
-    table.add_column("Defaults (temp / top_p / top_k / rep_pen / max_tok)")
+    table.add_column("Defaults (temp / top_p / top_k / rep_pen / ctx / max_tok / think_budget)")
 
     for m in cfg.models:
         d = m.defaults
@@ -243,8 +263,6 @@ def list_models() -> None:
             m.source,
             str(m.port),
             "✓" if m.lazy else "",
-            "✓" if m.multimodal else "",
-            m.reasoning_parser or "",
-            f"{d.temperature} / {d.top_p} / {d.top_k} / {d.repetition_penalty} / {d.max_tokens}",
+            f"{d.temperature} / {d.top_p} / {d.top_k} / {d.repetition_penalty} / {d.repetition_context_size} / {d.max_tokens} / {d.thinking_token_budget}",
         )
     console.print(table)

@@ -80,7 +80,7 @@ def _log_path(name: str) -> Path:
 
 
 def start_model(model: ModelConfig) -> int:
-    """Start a vllm-mlx process for the model. Returns the PID."""
+    """Start an mlx_lm.server process for the model. Returns the PID."""
     _ensure_dirs()
     pids = _load_pids()
 
@@ -96,7 +96,7 @@ def start_model(model: ModelConfig) -> int:
     log = _log_path(model.name)
     with log.open("a") as fh:
         proc = subprocess.Popen(
-            model.vllm_args(),
+            model.server_args(),
             stdout=fh,
             stderr=subprocess.STDOUT,
             start_new_session=True,

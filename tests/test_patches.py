@@ -1,285 +1,186 @@
-"""Integration tests for the two monkey-patches in mlx_server/vllm_wrapper.py.
+"""Tests for ThinkingBudgetProcessor in mlx_server/mlx_lm_wrapper.py.
 
-Each test class covers one patch and has a pair of tests:
-  - test_*_without_patch: confirms the known failure mode exists in upstream code
-  - test_*_with_patch:    confirms the patch eliminates the failure
-
-The only mock is the LLM: logits are uniform float arrays.  Framework code
-(mlx_lm, vllm_mlx) runs un-mocked so these tests catch API changes on upgrade.
+The processor is tested directly (no server, no model) using synthetic token IDs
+and uniform logits.  Framework code (mlx_lm) is not imported here.
 
 Run with:
     ~/.local/share/uv/tools/mlx-server/bin/python -m pytest tests/test_patches.py -v
 """
 
-import gc
-import inspect
-
 import mlx.core as mx
 import pytest
 
-from vllm_mlx.constrained.thinking_processor import (
-    Phase,
-    ThinkingAwareLogitsProcessor,
-)
+from mlx_server.mlx_lm_wrapper import ThinkingBudgetProcessor, _Phase
 
-# ── Token IDs for Qwen3 vocabulary (248320 tokens) ────────────────────────────
-THINK_START = 248068  # <think>
-THINK_END = 248069    # </think>
-VOCAB_SIZE = 248320
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+THINK_START = 100   # synthetic <think> token ID
+THINK_END   = 101   # synthetic </think> token ID
+VOCAB_SIZE  = 1000  # small vocab for fast tests
+OTHER       = 200   # an arbitrary normal token
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def uniform_logits() -> mx.array:
+def logits() -> mx.array:
     return mx.zeros([VOCAB_SIZE])
 
 
-def make_processor(budget: int = 10, prompt_has_think: bool = True) -> ThinkingAwareLogitsProcessor:
-    return ThinkingAwareLogitsProcessor(
+def make_proc(budget: int = 10, prompt_has_think_tag: bool = False) -> ThinkingBudgetProcessor:
+    return ThinkingBudgetProcessor(
         start_token_ids=[THINK_START],
         end_token_ids=[THINK_END],
-        thinking_token_budget=budget,
-        vocab_size=VOCAB_SIZE,
-        prompt_has_think_tag=prompt_has_think,
+        budget=budget,
+        prompt_has_think_tag=prompt_has_think_tag,
     )
 
 
-# ── Fixtures ──────────────────────────────────────────────────────────────────
-
-@pytest.fixture()
-def clean_make_logits_processors():
-    """Save and restore mlx_lm.sample_utils.make_logits_processors."""
-    import mlx_lm.sample_utils as su
-    original = su.make_logits_processors
-    yield
-    su.make_logits_processors = original
+def feed(proc: ThinkingBudgetProcessor, token_ids: list[int]) -> mx.array:
+    """Feed a sequence of tokens, returning logits after the last one."""
+    result = logits()
+    for i, tid in enumerate(token_ids):
+        result = proc(mx.array(token_ids[: i + 1]), logits())
+    return result
 
 
-@pytest.fixture()
-def clean_thinking_processor_call():
-    """Save and restore ThinkingAwareLogitsProcessor.__call__."""
-    original = ThinkingAwareLogitsProcessor.__call__
-    yield
-    ThinkingAwareLogitsProcessor.__call__ = original
+# ── IDLE → THINKING → TRANSITIONING → CONTENT ────────────────────────────────
 
+class TestBudgetEnforcement:
+    def test_starts_idle(self):
+        proc = make_proc(budget=5)
+        assert proc.state is _Phase.IDLE
 
-# ── Patch 1: repetition_context_size ─────────────────────────────────────────
+    def test_enters_thinking_on_start_token(self):
+        proc = make_proc(budget=5)
+        feed(proc, [THINK_START])
+        assert proc.state is _Phase.THINKING
 
-class TestRepetitionContextSizePatch:
-    """
-    vllm-mlx always calls make_logits_processors() without repetition_context_size,
-    so mlx_lm's hardcoded default of 20 is used regardless of the model config.
-    _patch_repetition_context_size() overrides the default by wrapping the function.
-    """
+    def test_stays_thinking_below_budget(self):
+        proc = make_proc(budget=5)
+        feed(proc, [THINK_START, OTHER, OTHER, OTHER])
+        assert proc.state is _Phase.THINKING
+        assert proc.thinking_tokens == 3
 
-    def test_default_context_size_is_20_without_patch(self, clean_make_logits_processors):
-        """Upstream mlx_lm hardcodes context_size=20 — the bug is real."""
-        import mlx_lm.sample_utils as su
+    def test_transitions_at_budget(self):
+        budget = 5
+        proc = make_proc(budget=budget)
+        feed(proc, [THINK_START] + [OTHER] * budget)
+        assert proc.state is _Phase.TRANSITIONING
 
-        procs = su.make_logits_processors(repetition_penalty=1.1)
+    def test_force_transition_masks_all_except_end(self):
+        proc = make_proc(budget=2)
+        result = feed(proc, [THINK_START, OTHER, OTHER])
+        assert proc.state is _Phase.TRANSITIONING
+        # Only THINK_END should survive
+        assert float(result[THINK_END]) == 0.0
+        assert float(result[OTHER]) == float("-inf")
+        assert float(result[0]) == float("-inf")
 
-        assert len(procs) == 1
-        cvars = inspect.getclosurevars(procs[0])
-        assert cvars.nonlocals["context_size"] == 20
+    def test_enters_content_after_end_token(self):
+        proc = make_proc(budget=2)
+        feed(proc, [THINK_START, OTHER, OTHER])   # budget hit → TRANSITIONING
+        feed(proc, [THINK_START, OTHER, OTHER, THINK_END])  # force complete
+        assert proc.state is _Phase.CONTENT
 
-    def test_patch_overrides_default_context_size(self, clean_make_logits_processors):
-        """After applying the patch, calls without explicit context_size use the new default."""
-        from mlx_server.vllm_wrapper import _patch_repetition_context_size
-        _patch_repetition_context_size(512)
+    def test_natural_end_before_budget_enters_content(self):
+        proc = make_proc(budget=10)
+        feed(proc, [THINK_START, OTHER, THINK_END])
+        assert proc.state is _Phase.CONTENT
 
-        import mlx_lm.sample_utils as su
-        procs = su.make_logits_processors(repetition_penalty=1.1)
-
-        assert len(procs) == 1
-        cvars = inspect.getclosurevars(procs[0])
-        assert cvars.nonlocals["context_size"] == 512
-
-    def test_caller_explicit_value_still_wins(self, clean_make_logits_processors):
-        """The patch only changes the default; an explicit caller value overrides it."""
-        from mlx_server.vllm_wrapper import _patch_repetition_context_size
-        _patch_repetition_context_size(512)
-
-        import mlx_lm.sample_utils as su
-        procs = su.make_logits_processors(repetition_penalty=1.1, repetition_context_size=64)
-
-        cvars = inspect.getclosurevars(procs[0])
-        assert cvars.nonlocals["context_size"] == 64
-
-
-# ── Patch 2: ThinkingAwareLogitsProcessor multi-turn fix ─────────────────────
-
-class TestThinkingProcessorPatch:
-    """
-    In a multi-turn conversation the prompt fed to the processor includes a
-    prior </think> token (THINK_END = 248069).  The unpatched processor starts
-    in THINKING phase (because prompt_has_think_tag=True) and processes ALL
-    prompt tokens through its state machine; when it hits the prior </think> it
-    transitions to CONTENT phase and permanently masks </think> at -inf.  The
-    model can then never close its thinking block → infinite loop.
-
-    The patch pre-sets _processed_len to the full first-call token count so the
-    state machine only sees tokens generated after the prompt.
-    """
-
-    # Simulated multi-turn prompt:
-    #   user turn 1 tokens  +  assistant turn 1 (<think>…</think>…content)
-    #   + user turn 2 tokens  +  template-injected <think> for current turn
-    PROMPT = (
-        [1, 2, 3, 4, 5]                                      # user turn 1
-        + [THINK_START, 100, 101, THINK_END, 200, 201]        # assistant turn 1
-        + [6, 7, 8]                                           # user turn 2
-        + [THINK_START]                                       # current-turn <think> from template
-    )
-    FIRST_GEN = 1234  # first token the model emits
-
-    def _first_call_tokens(self) -> mx.array:
-        # mlx_lm TokenBuffer: returns prompt + [generated_token] on first call
-        return mx.array(self.PROMPT + [self.FIRST_GEN])
-
-    # ── Necessity: confirm the failure mode ───────────────────────────────────
-
-    def test_without_patch_prior_end_token_corrupts_phase(self, clean_thinking_processor_call):
-        """
-        Failure mode: unpatched processor enters CONTENT on the first call
-        because it sees THINK_END in the multi-turn prompt.
-        """
-        assert THINK_END in self.PROMPT, "test setup error: THINK_END must be in prompt"
-
-        proc = make_processor(budget=50)
-        assert proc.state == Phase.THINKING  # starts correctly
-
-        result = proc(self._first_call_tokens(), uniform_logits())
-
-        # Processor hit THINK_END in prompt → jumped to CONTENT
-        assert proc.state == Phase.CONTENT
-        # CONTENT phase permanently masks </think>
+    def test_content_phase_masks_think_start(self):
+        proc = make_proc(budget=10)
+        result = feed(proc, [THINK_START, OTHER, THINK_END, OTHER])
+        assert proc.state is _Phase.CONTENT
+        # <think> and </think> starts are masked to prevent re-entry
+        assert float(result[THINK_START]) == float("-inf")
         assert float(result[THINK_END]) == float("-inf")
 
-    def test_without_patch_budget_never_triggers(self, clean_thinking_processor_call):
-        """
-        Consequence: because the processor is already in CONTENT, the thinking
-        budget enforcement is bypassed forever.  </think> stays masked on every
-        subsequent call — the infinite loop condition.
-        """
-        budget = 5
-        proc = make_processor(budget=budget)
-        proc(self._first_call_tokens(), uniform_logits())
-        assert proc.state == Phase.CONTENT
 
-        tokens = list(self.PROMPT) + [self.FIRST_GEN]
-        for _ in range(budget + 10):
-            tokens.append(2000)
-            result = proc(mx.array(tokens), uniform_logits())
-            assert float(result[THINK_END]) == float("-inf"), "THINK_END must stay masked"
-            assert proc.state == Phase.CONTENT, "state must stay CONTENT forever"
+# ── prompt_has_think_tag ──────────────────────────────────────────────────────
+# When the prompt prefills <think> (Qwen3 default), the processor starts in
+# THINKING and the first non-empty call skips all tokens (they are prompt cache
+# tokens, not generated tokens).  Budget counting begins with the second call.
 
-    # ── Correctness: confirm the patch fixes it ───────────────────────────────
+class TestPromptHasThinkTag:
+    def test_starts_in_thinking(self):
+        proc = make_proc(budget=5, prompt_has_think_tag=True)
+        assert proc.state is _Phase.THINKING
 
-    def test_with_patch_first_call_skips_prompt_tokens(self, clean_thinking_processor_call):
-        """
-        With the patch, the first call skips all prompt tokens.
-        The processor stays in THINKING and does not mask </think>.
-        """
-        from mlx_server.vllm_wrapper import _patch_thinking_processor
-        _patch_thinking_processor()
+    def test_first_call_skips_prompt_tokens(self):
+        # Simulates BatchGenerator: first call includes prompt cache tokens
+        proc = make_proc(budget=3, prompt_has_think_tag=True)
+        # First call with "prompt" tokens — should be a no-op
+        proc(mx.array([OTHER, OTHER, OTHER]), logits())
+        assert proc.thinking_tokens == 0
+        assert proc.state is _Phase.THINKING
 
-        proc = make_processor(budget=50)
-        result = proc(self._first_call_tokens(), uniform_logits())
+    def test_counts_from_second_call(self):
+        proc = make_proc(budget=3, prompt_has_think_tag=True)
+        proc(mx.array([OTHER]), logits())           # first call = prompt skip
+        proc(mx.array([OTHER, OTHER]), logits())    # second call: 1 new token
+        assert proc.thinking_tokens == 1
+        assert proc.state is _Phase.THINKING
 
-        assert proc.state == Phase.THINKING
-        assert float(result[THINK_END]) != float("-inf")
-
-    def test_with_patch_budget_enforced_on_generated_tokens_only(self, clean_thinking_processor_call):
-        """
-        After the first-call skip, subsequent calls count only generated tokens
-        against the budget.  TRANSITIONING triggers at exactly 'budget' generated tokens.
-        """
-        from mlx_server.vllm_wrapper import _patch_thinking_processor
-        _patch_thinking_processor()
-
-        budget = 5
-        proc = make_processor(budget=budget)
-
-        # First call: skip prompt
-        tokens = list(self.PROMPT) + [self.FIRST_GEN]
-        proc(mx.array(tokens), uniform_logits())
-        assert proc.state == Phase.THINKING
-
-        # Generate 'budget - 1' more tokens; each increments thinking_tokens by 1
-        for i in range(budget - 1):
-            tokens.append(2000 + i)
-            proc(mx.array(tokens), uniform_logits())
-            assert proc.state == Phase.THINKING, f"still thinking after {i + 1} gen tokens"
-
-        # One more pushes thinking_tokens to budget → TRANSITIONING
-        tokens.append(3000)
-        proc(mx.array(tokens), uniform_logits())
-        assert proc.state == Phase.TRANSITIONING
-
-    def test_with_patch_transitioning_forces_end_token(self, clean_thinking_processor_call):
-        """
-        Once TRANSITIONING, _force_transition masks everything except THINK_END.
-        The model is forced to emit </think>, ending the thinking block.
-        """
-        from mlx_server.vllm_wrapper import _patch_thinking_processor
-        _patch_thinking_processor()
-
+    def test_transitions_at_budget_after_skip(self):
         budget = 3
-        proc = make_processor(budget=budget)
+        proc = make_proc(budget=budget, prompt_has_think_tag=True)
+        proc(mx.array([OTHER]), logits())                        # prompt skip
+        proc(mx.array([OTHER] * (1 + budget)), logits())        # budget tokens
+        assert proc.state is _Phase.TRANSITIONING
 
-        tokens = list(self.PROMPT) + [self.FIRST_GEN]
-        proc(mx.array(tokens), uniform_logits())
-
-        for i in range(budget):
-            tokens.append(2000 + i)
-            result = proc(mx.array(tokens), uniform_logits())
-
-        assert proc.state == Phase.TRANSITIONING
-        # Only THINK_END should be non -inf
-        assert float(result[THINK_END]) != float("-inf")
-        # A random non-special token should be -inf
-        assert float(result[42]) == float("-inf")
+    def test_prompt_end_token_does_not_trigger_content(self):
+        # Core regression: </think> sitting in prompt cache must NOT push the
+        # processor to CONTENT and block future </think> generation.
+        proc = make_proc(budget=10, prompt_has_think_tag=True)
+        # Simulate prompt containing a prior turn's </think>
+        proc(mx.array([THINK_END, OTHER]), logits())  # first call = skip
+        assert proc.state is _Phase.THINKING          # must still be THINKING
 
 
-# ── Regression: v1 patch's id()-reuse bug ────────────────────────────────────
+# ── budget=0 ──────────────────────────────────────────────────────────────────
 
-class TestIdReuseRegression:
-    """
-    The v1 patch used id(self) in a set to track first-call state.  Python
-    reuses object ids after GC, so a recycled id caused the first call for a
-    new processor to be routed directly to the original __call__, feeding all
-    prompt tokens through the state machine and triggering the bug.
+class TestBudgetZero:
+    def test_prompt_tag_starts_transitioning(self):
+        proc = make_proc(budget=0, prompt_has_think_tag=True)
+        assert proc.state is _Phase.TRANSITIONING
 
-    The v2 patch uses self._processed_len == 0 (always 0 after __init__) as
-    the first-call signal, which is immune to id reuse.
-    """
+    def test_forces_end_on_first_call(self):
+        proc = make_proc(budget=0, prompt_has_think_tag=True)
+        result = proc(mx.array([]), logits())  # empty tokens (pre-first-token call)
+        assert float(result[THINK_END]) == 0.0
+        assert float(result[OTHER]) == float("-inf")
 
-    def test_new_processor_is_not_affected_by_gc_of_old_processors(
-        self, clean_thinking_processor_call
-    ):
-        """
-        Even after many processors are GC'd (freeing their ids for reuse),
-        a freshly created processor must correctly skip prompt tokens.
-        """
-        from mlx_server.vllm_wrapper import _patch_thinking_processor
-        _patch_thinking_processor()
+    def test_forces_end_on_first_nonempty_call(self):
+        proc = make_proc(budget=0, prompt_has_think_tag=True)
+        result = proc(mx.array([OTHER]), logits())  # first non-empty = skip but TRANSITIONING
+        assert float(result[THINK_END]) == 0.0
+        assert float(result[OTHER]) == float("-inf")
 
-        # Create and discard many processors to maximize id-reuse opportunity
-        for _ in range(200):
-            p = make_processor()
-            del p
-        gc.collect()
+    def test_idle_budget_zero_transitions_after_start(self):
+        proc = make_proc(budget=0, prompt_has_think_tag=False)
+        # IDLE until <think> seen, then immediately TRANSITIONING
+        feed(proc, [OTHER, THINK_START])
+        assert proc.state is _Phase.TRANSITIONING
 
-        # Fresh processor must have _processed_len == 0 and skip prompt correctly
-        prompt_with_prior_end = [1, 2, THINK_START, 100, THINK_END, 3, THINK_START]
-        proc = make_processor(budget=50)
 
-        assert proc._processed_len == 0, "_processed_len must be 0 after __init__"
+# ── Rollback via snapshot/restore ─────────────────────────────────────────────
 
-        first_tokens = mx.array(prompt_with_prior_end + [999])
-        proc(first_tokens, uniform_logits())
+class TestSnapshotRestore:
+    def test_rollback_resets_thinking_count(self):
+        proc = make_proc(budget=10, prompt_has_think_tag=True)
+        # Simulate: prompt skip on first call, then grow, then roll back
+        proc(mx.array([OTHER]), logits())                           # prompt skip
+        proc(mx.array([OTHER, OTHER, OTHER, OTHER, OTHER]), logits())  # 4 new tokens
+        assert proc.thinking_tokens == 4
 
-        assert proc.state == Phase.THINKING, (
-            "ID-reuse regression: new processor processed all prompt tokens "
-            "including prior THINK_END and entered CONTENT phase"
-        )
+        proc(mx.array([OTHER, OTHER]), logits())  # roll back to 1 new token
+        assert proc.thinking_tokens == 1
+
+    def test_rollback_stays_in_thinking(self):
+        proc = make_proc(budget=10, prompt_has_think_tag=True)
+        proc(mx.array([OTHER]), logits())           # prompt skip
+        proc(mx.array([OTHER] * 9), logits())       # 8 new tokens — near budget
+        proc(mx.array([OTHER] * 4), logits())       # roll back to 3 new tokens
+        assert proc.state is _Phase.THINKING
+        assert proc.thinking_tokens == 3

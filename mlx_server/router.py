@@ -5,7 +5,7 @@ Routing logic:
   1. Extract `model` from the JSON body (POST) or `model` query param (GET).
   2. Look up the ModelConfig; inject its `defaults` into the body for any key
      the caller did not supply (caller values always win).
-  3. Forward the (possibly enriched) request to the model's vllm-mlx backend.
+  3. Forward the (possibly enriched) request to the model's mlx_lm.server backend.
   4. Stream the response back verbatim.
 
 /v1/models is handled specially: it aggregates the model list from the YAML
@@ -15,70 +15,6 @@ from __future__ import annotations
 
 import json
 from typing import AsyncGenerator
-
-# Gemma4 special token delimiters (single vocab tokens in the Gemma4 tokenizer)
-_G4_QUOTE = '<|"|>'
-
-
-def _prerender_gemma4_tool_history(messages: list[dict]) -> list[dict]:
-    """Convert tool-call history to pre-rendered Gemma4 token format.
-
-    vllm-mlx's MLLM.stream_chat silently drops assistant messages that have
-    content=null (even when tool_calls is present), so the Gemma4 chat template
-    never gets a chance to forward-scan for the tool responses.  By embedding
-    the tool call + response tokens directly into the assistant content string
-    we bypass the bug: the MLLM path sees non-empty content and includes the
-    message, and the tokenizer encodes <|tool_call> / <|tool_response> / <|"|>
-    as the correct special-token IDs.
-
-    Tool messages that are consumed by this pass are removed from the output.
-    """
-    result: list[dict] = []
-    i = 0
-    while i < len(messages):
-        msg = messages[i]
-        if msg.get("role") == "assistant" and msg.get("tool_calls"):
-            parts: list[str] = []
-            for tc in msg["tool_calls"]:
-                func = tc.get("function", {})
-                name = func.get("name", "")
-                args = func.get("arguments", "")
-                # Embed arguments: JSON string goes in verbatim; dict is
-                # formatted as Gemma4 key:<|"|>val<|"|> pairs.
-                if isinstance(args, str):
-                    args_inner = args
-                else:
-                    kv: list[str] = []
-                    for k, v in (args or {}).items():
-                        kv.append(f"{k}:{_G4_QUOTE}{v}{_G4_QUOTE}" if isinstance(v, str)
-                                  else f"{k}:{json.dumps(v, ensure_ascii=False)}")
-                    args_inner = ",".join(kv)
-                parts.append(f"<|tool_call>call:{name}{{{args_inner}}}<tool_call|>")
-
-                # Forward-scan: find the matching tool response
-                tc_id = tc.get("id")
-                j = i + 1
-                while j < len(messages) and messages[j].get("role") == "tool":
-                    tool_msg = messages[j]
-                    if not tc_id or tool_msg.get("tool_call_id") == tc_id:
-                        response_text = tool_msg.get("content") or ""
-                        parts.append(
-                            f"<|tool_response>response:{name}"
-                            f"{{value:{_G4_QUOTE}{response_text}{_G4_QUOTE}}}"
-                            f"<tool_response|>"
-                        )
-                        break
-                    j += 1
-
-            result.append({"role": "assistant", "content": "".join(parts)})
-            # Consume all following tool messages for this turn
-            i += 1
-            while i < len(messages) and messages[i].get("role") == "tool":
-                i += 1
-        else:
-            result.append(msg)
-            i += 1
-    return result
 
 import httpx
 from contextlib import asynccontextmanager
@@ -193,50 +129,19 @@ async def proxy(path: str, request: Request) -> Response:
         for key, val in defaults.items():
             if key not in body:
                 body[key] = val
-        # vllm-mlx expects the HuggingFace model ID, not our friendly alias
+        # mlx_lm.server ignores the model field for routing (model is fixed at
+        # server startup) but uses it for response metadata — pass the source ID.
         body["model"] = model_cfg.source
 
-        if "messages" in body:
-            gemma4_model = "gemma4" in model_name.lower()
-            if gemma4_model:
-                # vllm-mlx's MLLM.stream_chat drops assistant messages with
-                # content=null even when tool_calls is present, so the Gemma4
-                # chat template never sees the tool history and the model loops.
-                # Pre-render tool call + response tokens into the content string
-                # so the MLLM path includes the message and the tokenizer encodes
-                # the special tokens correctly.
-                body["messages"] = _prerender_gemma4_tool_history(body["messages"])
-            elif model_cfg.multimodal:
-                # For non-Gemma4 multimodal models: strip content from assistant
-                # messages that also carry tool_calls. Some clients store both
-                # the raw streamed text and tool_calls on the same entry; the
-                # chat template would then emit the tool call twice.
-                for msg in body["messages"]:
-                    if (
-                        msg.get("role") == "assistant"
-                        and msg.get("tool_calls")
-                        and msg.get("content") is not None
-                    ):
-                        msg["content"] = None
-            else:
-                # For text-only models (Qwen): normalize Gemma4-format tool call
-                # tokens that Pi may have stored as assistant content from a prior
-                # failed parse. The AutoToolParser's Gemma4 step fires on
-                # <|tool_call> but fails on Qwen-style JSON args, leaving the raw
-                # text in Pi's history; the model then imitates the wrong format.
-                # Converting <|tool_call>/<tool_call|> → <tool_call>/</tool_call>
-                # lets the QwenToolParser handle it on the next turn.
-                for msg in body["messages"]:
-                    if (
-                        msg.get("role") == "assistant"
-                        and isinstance(msg.get("content"), str)
-                        and "<|tool_call>" in msg["content"]
-                    ):
-                        msg["content"] = (
-                            msg["content"]
-                            .replace("<|tool_call>", "<tool_call>")
-                            .replace("<tool_call|>", "</tool_call>")
-                        )
+        # Pi sends enable_thinking as a top-level field (thinkingFormat="qwen"),
+        # which mlx_lm.server ignores. For False we must move it into
+        # chat_template_kwargs so the tokenizer actually suppresses thinking.
+        # For True we leave it top-level — moving it would trigger prefill.
+        if body.get("enable_thinking") is False:
+            chat_kwargs = body.get("chat_template_kwargs") or {}
+            chat_kwargs["enable_thinking"] = False
+            body["chat_template_kwargs"] = chat_kwargs
+            del body["enable_thinking"]
 
         body_bytes = json.dumps(body).encode()
 
@@ -261,7 +166,7 @@ async def proxy(path: str, request: Request) -> Response:
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(2.0)) as probe:
                 await probe.head(backend)
-        except httpx.ConnectError:
+        except (httpx.ConnectError, httpx.TimeoutException):
             return _backend_unavailable(model_name, model_cfg.port)
 
         # Client must live inside the generator — it would be closed by the time
@@ -276,7 +181,8 @@ async def proxy(path: str, request: Request) -> Response:
                         async for chunk in resp.aiter_bytes():
                             yield chunk
                 except httpx.ConnectError:
-                    yield _backend_unavailable(model_name, model_cfg.port).body
+                    err = json.dumps({"error": {"message": f"Backend for '{model_name}' died mid-stream", "type": "service_unavailable"}})
+                    yield f"data: {err}\n\ndata: [DONE]\n\n".encode()
 
         return StreamingResponse(_stream_gen(), media_type="text/event-stream")
     else:
@@ -291,5 +197,5 @@ async def proxy(path: str, request: Request) -> Response:
                 status_code=resp.status_code,
                 headers=dict(resp.headers),
             )
-        except httpx.ConnectError:
+        except (httpx.ConnectError, httpx.TimeoutException):
             return _backend_unavailable(model_name, model_cfg.port)

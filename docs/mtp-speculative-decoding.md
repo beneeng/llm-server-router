@@ -174,8 +174,3 @@ mlx_vlm's native enforcement.
 | `mlx_vlm/server/generation.py:930–950` | Draft model loading; `987` is the thinking_budget guard |
 | `mlx_vlm/server/cli.py:207–213` | `--draft-model` / `--draft-kind` → env var wiring |
 
-## Important PATH note
-
-The shell may resolve `mlx` to the old `local_llm` project if that venv is active (direnv
-`.envrc` in `~/workspace/local_llm/`). Always use the full path
-`~/.local/bin/mlx` for stop/start commands, or verify with `which mlx` first.

@@ -47,7 +47,6 @@ Each model runs in its own `vllm-mlx serve` subprocess — full process isolatio
 
 ```bash
 # 1. Install
-cd ~/workspace/local_llm
 uv tool install -e . --python 3.12 --prerelease allow
 
 # 2. Install config

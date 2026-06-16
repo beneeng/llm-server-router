@@ -160,9 +160,13 @@ async def proxy(path: str, request: Request) -> Response:
 
         if model_cfg.vlm:
             # mlx_vlm.server understands enable_thinking and thinking_budget natively.
-            # Rename thinking_token_budget (our internal field) to thinking_budget.
+            # Rename thinking_token_budget (our internal field) to thinking_budget,
+            # unless MTP is active — mlx_vlm rejects thinking_budget with a draft model.
             if "thinking_token_budget" in body:
-                body["thinking_budget"] = body.pop("thinking_token_budget")
+                if model_cfg.mtp:
+                    body.pop("thinking_token_budget")
+                else:
+                    body["thinking_budget"] = body.pop("thinking_token_budget")
             # mlx_vlm does not use chat_template_kwargs — strip it so the server
             # doesn't choke on an unrecognised field.
             body.pop("chat_template_kwargs", None)

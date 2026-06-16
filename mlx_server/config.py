@@ -39,6 +39,9 @@ class ModelConfig(BaseModel):
     # True → start via mlx_vlm.server (full vision pipeline, per-request thinking_budget).
     # False → start via mlx_lm_wrapper.py (text-only, ThinkingBudgetProcessor patch).
     vlm: bool = False
+    # True → MTP speculative decoding is active; thinking_token_budget is incompatible
+    # and is stripped by the router rather than forwarded as thinking_budget.
+    mtp: bool = False
     # When True, mlx start skips this model; it is started on the first request
     # via MemoryManager.ensure_model_ready().  mlx start --model NAME ignores
     # this flag and starts the model explicitly regardless.

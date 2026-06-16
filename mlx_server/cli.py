@@ -254,9 +254,7 @@ def list_models() -> None:
     table.add_column("Source")
     table.add_column("Port", justify="right")
     table.add_column("Lazy")
-    table.add_column("Multimodal")
-    table.add_column("Reasoning parser")
-    table.add_column("Defaults (temp / top_p / top_k / rep_pen / max_tok)")
+    table.add_column("Defaults (temp / top_p / top_k / rep_pen / ctx / max_tok / think_budget)")
 
     for m in cfg.models:
         d = m.defaults
@@ -265,8 +263,6 @@ def list_models() -> None:
             m.source,
             str(m.port),
             "✓" if m.lazy else "",
-            "✓" if m.multimodal else "",
-            m.reasoning_parser or "",
-            f"{d.temperature} / {d.top_p} / {d.top_k} / {d.repetition_penalty} / {d.max_tokens}",
+            f"{d.temperature} / {d.top_p} / {d.top_k} / {d.repetition_penalty} / {d.repetition_context_size} / {d.max_tokens} / {d.thinking_token_budget}",
         )
     console.print(table)

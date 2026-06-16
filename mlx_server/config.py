@@ -15,6 +15,7 @@ class ModelDefaults(BaseModel):
     top_p: float | None = None
     top_k: int | None = None
     repetition_penalty: float | None = None
+    repetition_context_size: int | None = None
     min_p: float | None = None
     max_tokens: int | None = None
     thinking_token_budget: int | None = None
@@ -27,20 +28,17 @@ class ModelDefaults(BaseModel):
 class ModelConfig(BaseModel):
     name: str
     source: str
-    multimodal: bool = False
-    # vllm-mlx 0.4.0rc1 continuous-batching patch for Gemma4 MoE is broken
-    # (patch_gemma4_attention_for_batching doesn't forward shared_kv).
-    # Set to False for any mllm model until a fix lands upstream.
-    continuous_batching: bool = True
-    reasoning_parser: str | None = None
-    # Arbitrary extra flags forwarded verbatim to vllm-mlx serve, e.g.:
-    #   ["--default-chat-template-kwargs", '{"enable_thinking": false}']
+    # Arbitrary extra flags forwarded verbatim to mlx_lm.server, e.g.:
+    #   ["--chat-template-args", '{"enable_thinking": false}']
+    #   ["--decode-concurrency", "16"]
     extra_args: list[str] = []
-    # Server-level repetition context window passed to mlx_lm via vllm_wrapper.
-    # vllm-mlx has no API for this; mlx_lm's hardcoded default is 20.
-    repetition_context_size: int | None = None
     defaults: ModelDefaults = ModelDefaults()
     protected: bool = False
+    # True for models that accept image_url content blocks (Gemma4, qwen3_5_moe VL, etc.).
+    multimodal: bool = False
+    # True → start via mlx_vlm.server (full vision pipeline, per-request thinking_budget).
+    # False → start via mlx_lm_wrapper.py (text-only, ThinkingBudgetProcessor patch).
+    vlm: bool = False
     # When True, mlx start skips this model; it is started on the first request
     # via MemoryManager.ensure_model_ready().  mlx start --model NAME ignores
     # this flag and starts the model explicitly regardless.
@@ -55,22 +53,26 @@ class ModelConfig(BaseModel):
     def backend_url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
-    def vllm_args(self) -> list[str]:
+    def server_args(self) -> list[str]:
         from .manager import _bin
         from pathlib import Path as _Path
-        wrapper = str(_Path(__file__).parent / "vllm_wrapper.py")
-        args = [_bin("python3"), wrapper]
-        if self.repetition_context_size is not None:
-            args += ["--repetition-context-size", str(self.repetition_context_size)]
-        args += ["serve", self.source, "--port", str(self.port)]
-        if self.continuous_batching:
-            args.append("--continuous-batching")
-        if self.multimodal:
-            args.append("--mllm")
-        if self.reasoning_parser:
-            args += ["--reasoning-parser", self.reasoning_parser]
-        args += self.extra_args
-        return args
+        if self.vlm:
+            vlm_wrapper = str(_Path(__file__).parent / "mlx_vlm_wrapper.py")
+            return [
+                _bin("python3"), vlm_wrapper,
+                "--model", self.source,
+                "--port", str(self.port),
+                "--host", "127.0.0.1",
+                "--trust-remote-code",
+                "--enable-thinking",  # allow per-request enable_thinking override
+            ] + self.extra_args
+        wrapper = str(_Path(__file__).parent / "mlx_lm_wrapper.py")
+        return [
+            _bin("python3"), wrapper,
+            "--model", self.source,
+            "--port", str(self.port),
+            "--trust-remote-code",
+        ] + self.extra_args
 
 
 class ServerConfig(BaseModel):

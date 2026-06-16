@@ -21,6 +21,17 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
+def _has_image_content(body: dict) -> bool:
+    """Return True if any message in the request contains a non-text content block."""
+    for msg in body.get("messages", []):
+        content = msg.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") not in ("text",):
+                    return True
+    return False
+
+
 def _backend_unavailable(model_name: str, port: int) -> JSONResponse:
     return JSONResponse(
         status_code=503,
@@ -123,6 +134,20 @@ async def proxy(path: str, request: Request) -> Response:
             }},
         )
 
+    # --- reject image content for text-only models before touching the backend ---
+    if body and _has_image_content(body) and not model_cfg.multimodal:
+        multimodal_models = [m.name for m in cfg.models if m.multimodal]
+        return JSONResponse(
+            status_code=400,
+            content={"error": {
+                "message": (
+                    f"Model '{model_name}' is text-only and does not support image content. "
+                    f"Use a multimodal model instead: {multimodal_models}"
+                ),
+                "type": "invalid_request_error",
+            }},
+        )
+
     # --- inject default hyperparams (caller values win) + rewrite model alias ---
     if body:
         defaults = model_cfg.defaults.as_request_fields()
@@ -133,15 +158,24 @@ async def proxy(path: str, request: Request) -> Response:
         # server startup) but uses it for response metadata — pass the source ID.
         body["model"] = model_cfg.source
 
-        # Pi sends enable_thinking as a top-level field (thinkingFormat="qwen"),
-        # which mlx_lm.server ignores. For False we must move it into
-        # chat_template_kwargs so the tokenizer actually suppresses thinking.
-        # For True we leave it top-level — moving it would trigger prefill.
-        if body.get("enable_thinking") is False:
-            chat_kwargs = body.get("chat_template_kwargs") or {}
-            chat_kwargs["enable_thinking"] = False
-            body["chat_template_kwargs"] = chat_kwargs
-            del body["enable_thinking"]
+        if model_cfg.vlm:
+            # mlx_vlm.server understands enable_thinking and thinking_budget natively.
+            # Rename thinking_token_budget (our internal field) to thinking_budget.
+            if "thinking_token_budget" in body:
+                body["thinking_budget"] = body.pop("thinking_token_budget")
+            # mlx_vlm does not use chat_template_kwargs — strip it so the server
+            # doesn't choke on an unrecognised field.
+            body.pop("chat_template_kwargs", None)
+        else:
+            # Pi sends enable_thinking as a top-level field (thinkingFormat="qwen"),
+            # which mlx_lm.server ignores. For False we must move it into
+            # chat_template_kwargs so the tokenizer actually suppresses thinking.
+            # For True we leave it top-level — moving it would trigger prefill.
+            if body.get("enable_thinking") is False:
+                chat_kwargs = body.get("chat_template_kwargs") or {}
+                chat_kwargs["enable_thinking"] = False
+                body["chat_template_kwargs"] = chat_kwargs
+                del body["enable_thinking"]
 
         body_bytes = json.dumps(body).encode()
 
@@ -178,6 +212,19 @@ async def proxy(path: str, request: Request) -> Response:
                         request.method, url,
                         content=body_bytes, headers=headers, params=fwd_params,
                     ) as resp:
+                        if resp.status_code >= 400:
+                            # Backend returned an error (e.g. 404 from mlx_lm.server
+                            # when it rejects a request). Emit a proper SSE error so
+                            # the client sees it rather than "Stream ended without
+                            # finish_reason".
+                            raw = await resp.aread()
+                            try:
+                                detail = json.loads(raw).get("error", raw.decode())
+                            except Exception:
+                                detail = raw.decode()
+                            err = json.dumps({"error": {"message": str(detail), "type": "backend_error", "code": resp.status_code}})
+                            yield f"data: {err}\n\ndata: [DONE]\n\n".encode()
+                            return
                         async for chunk in resp.aiter_bytes():
                             yield chunk
                 except httpx.ConnectError:

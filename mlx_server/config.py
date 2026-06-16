@@ -34,6 +34,11 @@ class ModelConfig(BaseModel):
     extra_args: list[str] = []
     defaults: ModelDefaults = ModelDefaults()
     protected: bool = False
+    # True for models that accept image_url content blocks (Gemma4, qwen3_5_moe VL, etc.).
+    multimodal: bool = False
+    # True → start via mlx_vlm.server (full vision pipeline, per-request thinking_budget).
+    # False → start via mlx_lm_wrapper.py (text-only, ThinkingBudgetProcessor patch).
+    vlm: bool = False
     # When True, mlx start skips this model; it is started on the first request
     # via MemoryManager.ensure_model_ready().  mlx start --model NAME ignores
     # this flag and starts the model explicitly regardless.
@@ -51,6 +56,16 @@ class ModelConfig(BaseModel):
     def server_args(self) -> list[str]:
         from .manager import _bin
         from pathlib import Path as _Path
+        if self.vlm:
+            vlm_wrapper = str(_Path(__file__).parent / "mlx_vlm_wrapper.py")
+            return [
+                _bin("python3"), vlm_wrapper,
+                "--model", self.source,
+                "--port", str(self.port),
+                "--host", "127.0.0.1",
+                "--trust-remote-code",
+                "--enable-thinking",  # allow per-request enable_thinking override
+            ] + self.extra_args
         wrapper = str(_Path(__file__).parent / "mlx_lm_wrapper.py")
         return [
             _bin("python3"), wrapper,

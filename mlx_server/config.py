@@ -42,6 +42,10 @@ class ModelConfig(BaseModel):
     # True → MTP speculative decoding is active; thinking_token_budget is incompatible
     # and is stripped by the router rather than forwarded as thinking_budget.
     mtp: bool = False
+    # True → pass --enable-thinking to mlx_vlm.server, allowing per-request thinking
+    # control. Set only for models that support thinking mode (Qwen3). Gemma4 emits
+    # <|channel>thought tokens by default when this flag is present.
+    thinking: bool = False
     # When True, mlx start skips this model; it is started on the first request
     # via MemoryManager.ensure_model_ready().  mlx start --model NAME ignores
     # this flag and starts the model explicitly regardless.
@@ -67,7 +71,7 @@ class ModelConfig(BaseModel):
                 "--port", str(self.port),
                 "--host", "127.0.0.1",
                 "--trust-remote-code",
-                "--enable-thinking",  # allow per-request enable_thinking override
+                *( ["--enable-thinking"] if self.thinking else [] ),
             ] + self.extra_args
         wrapper = str(_Path(__file__).parent / "mlx_lm_wrapper.py")
         return [

@@ -33,6 +33,36 @@ def _apply_patches() -> None:
 
     _utils.load_model = _patched_load_model
 
+    # Patch ThinkingStreamState._strip_open_marker to handle compound open markers
+    # that the tokenizer splits across multiple tokens (e.g. Gemma4's
+    # "<|channel>thought" arrives as two tokens: "<|channel>" then "thought").
+    # The original does a substring search for the full marker string, which never
+    # matches when the marker is split. We accumulate fragments across calls so the
+    # full marker can be detected and stripped, including the trailing newline.
+    from mlx_vlm.server.responses_state import ThinkingStreamState
+
+    def _patched_strip_open_marker(self, text: str) -> str:
+        if getattr(self, "_just_stripped_marker", False):
+            self._just_stripped_marker = False
+            text = text.lstrip("\n")
+            if not text:
+                return ""
+
+        combined = getattr(self, "_pending_open_fragment", "") + text
+        for marker in self.open_markers:
+            if marker in combined:
+                before, after = combined.split(marker, 1)
+                self._pending_open_fragment = ""
+                self._just_stripped_marker = True
+                return (before + after).lstrip("\n")
+            if marker.startswith(combined):
+                self._pending_open_fragment = combined
+                return ""
+        self._pending_open_fragment = ""
+        return combined
+
+    ThinkingStreamState._strip_open_marker = _patched_strip_open_marker
+
 
 def main() -> None:
     _apply_patches()

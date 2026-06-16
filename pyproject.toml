@@ -17,6 +17,10 @@ dependencies = [
     "rich>=13.0",
     "vllm-mlx>=0.4.0rc1",
     "psutil>=5.9",
+    "pytest>=9.0.3",
+    "pip>=26.1.2",
+    "iniconfig>=2.3.0",
+    "pluggy>=1.6.0",
 ]
 
 [project.scripts]

@@ -261,7 +261,7 @@ async def proxy(path: str, request: Request) -> Response:
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(2.0)) as probe:
                 await probe.head(backend)
-        except httpx.ConnectError:
+        except (httpx.ConnectError, httpx.TimeoutException):
             return _backend_unavailable(model_name, model_cfg.port)
 
         # Client must live inside the generator — it would be closed by the time
@@ -276,7 +276,8 @@ async def proxy(path: str, request: Request) -> Response:
                         async for chunk in resp.aiter_bytes():
                             yield chunk
                 except httpx.ConnectError:
-                    yield _backend_unavailable(model_name, model_cfg.port).body
+                    err = json.dumps({"error": {"message": f"Backend for '{model_name}' died mid-stream", "type": "service_unavailable"}})
+                    yield f"data: {err}\n\ndata: [DONE]\n\n".encode()
 
         return StreamingResponse(_stream_gen(), media_type="text/event-stream")
     else:
@@ -291,5 +292,5 @@ async def proxy(path: str, request: Request) -> Response:
                 status_code=resp.status_code,
                 headers=dict(resp.headers),
             )
-        except httpx.ConnectError:
+        except (httpx.ConnectError, httpx.TimeoutException):
             return _backend_unavailable(model_name, model_cfg.port)

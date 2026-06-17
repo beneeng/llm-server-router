@@ -49,7 +49,7 @@ class ModelConfig(BaseModel):
     # When True, mlx start skips this model; it is started on the first request
     # via MemoryManager.ensure_model_ready().  mlx start --model NAME ignores
     # this flag and starts the model explicitly regardless.
-    lazy: bool = False
+    lazy: bool = True
     # Expected total footprint (weights + KV cache) in GB. Used for pre-eviction
     # budgeting: we clear this much room BEFORE starting the model. Set conservatively
     # (i.e. larger than actual weights) to account for KV-cache pre-allocation.

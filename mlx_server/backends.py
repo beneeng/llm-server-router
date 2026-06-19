@@ -152,6 +152,20 @@ class Mflux(Backend):
     modalities = frozenset({"image"})
 
 
+class Mflux2(Backend):
+    """FLUX.2-klein image generation via mflux (shares the image isolated venv).
+
+    Uses Flux2Klein (not Flux1) — different API, guidance=1.0 default, 4-step distilled.
+    Supports LoRA via --lora-paths and abliterated text encoder via --model-path.
+    """
+
+    name = "mflux2"
+    env = "image"
+    packages = ("mflux", "fastapi", "uvicorn[standard]", "pydantic")
+    wrapper = "mflux2_wrapper.py"
+    modalities = frozenset({"image"})
+
+
 BACKENDS: dict[str, Backend] = {
-    b.name: b for b in (MlxLm(), MlxVlm(), MlxAudio(), Mflux())
+    b.name: b for b in (MlxLm(), MlxVlm(), MlxAudio(), Mflux(), Mflux2())
 }

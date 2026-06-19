@@ -54,12 +54,12 @@ curl -X POST http://localhost:6300/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"qwen3.6-27b","messages":[{"role":"user","content":"hi"}],"stream":true}'
 
-# Audio (requires mlx install audio + kokoro entry in config)
+# Audio (requires a kokoro entry in config; audio backend auto-provisions on first call)
 curl -X POST http://localhost:6300/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{"model":"kokoro","input":"Hello world","voice":"af_heart"}' --output speech.mp3
 
-# Image (requires mlx install image + flux-schnell entry in config)
+# Image (requires a flux-schnell entry in config; image backend auto-provisions on first call)
 curl -X POST http://localhost:6300/v1/images/generations \
   -H "Content-Type: application/json" \
   -d '{"model":"flux-schnell","prompt":"a red cat"}' \
@@ -148,4 +148,4 @@ For streaming requests, the `httpx.AsyncClient` **must** be opened inside `_stre
 ## External integrations
 
 - **opencode**: `~/.config/opencode/opencode_local.json` — `mlx-router` provider (port 6300), Qwen models only
-- **Pi harness**: `~/.pi/agent/models.json` — `mlx-router` provider, all 5 models including Gemma4
+- **Pi harness**: `~/.pi/agent/models.json` — `mlx-router` provider, all models including Gemma4

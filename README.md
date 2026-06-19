@@ -15,8 +15,8 @@ opencode / Pi harness / Open WebUI / curl
         │  • LRU eviction     │
         └──┬──────┬──────┬───┘
            │      │      │
-     :6301 ▼ :6302 ▼ :6311 ▼  :6312 ▼  ...
-    mlx_vlm mlx_lm  mlx_audio  mflux
+     :6301 ▼ :6302 ▼ :6303 ▼  :6304 ▼  ...   (sequential, by config order)
+    mlx-vlm mlx-lm  mlx-audio  mflux
     (text)  (text)  (audio)    (image)
 ```
 
@@ -77,7 +77,7 @@ curl -X POST http://localhost:6300/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"qwen3.6-27b","messages":[{"role":"user","content":"hello"}],"stream":true}'
 
-# Text-to-speech (requires: mlx install audio + kokoro entry in models.yaml)
+# Text-to-speech (requires a kokoro entry in models.yaml; audio backend auto-provisions)
 curl -X POST http://localhost:6300/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{"model":"kokoro","input":"Hello world","voice":"af_heart"}' \
@@ -87,7 +87,7 @@ curl -X POST http://localhost:6300/v1/audio/speech \
 curl -X POST http://localhost:6300/v1/audio/transcriptions \
   -F "model=whisper-large" -F "file=@audio.mp3"
 
-# Image generation (requires: mlx install image + flux-schnell entry in models.yaml)
+# Image generation (requires a flux-schnell entry in models.yaml; image backend auto-provisions)
 curl -X POST http://localhost:6300/v1/images/generations \
   -H "Content-Type: application/json" \
   -d '{"model":"flux-schnell","prompt":"a tabby cat on a red sofa"}' \
@@ -111,7 +111,8 @@ models:
   - name: my-llm               # alias used by clients
     source: org/repo-id        # HuggingFace model ID
     backend: mlx-vlm           # mlx-lm | mlx-vlm | mlx-audio | mflux  (default: mlx-lm)
-    multimodal: true           # override image-input support (default: backend's capability)
+    # multimodal: true         # optional: override image-input support; omit to use
+                               #   the backend's own capability (mlx-vlm already accepts images)
     mtp: false                 # true → MTP speculative decoding active
     thinking: false            # true → pass --enable-thinking to mlx-vlm
     lazy: true                 # true → skip on `mlx start`; start on first request

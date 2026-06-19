@@ -14,6 +14,7 @@ config rather than forwarding, so it works even when backends are offline.
 from __future__ import annotations
 
 import json
+import re
 from typing import AsyncGenerator
 
 import httpx
@@ -103,6 +104,14 @@ async def proxy(path: str, request: Request) -> Response:
         if not model_name:
             model_name = body.get("model")
 
+    # For multipart/form-data (e.g. audio transcriptions), extract `model` form field
+    if not model_name and body_bytes:
+        ct = request.headers.get("content-type", "")
+        if "multipart/form-data" in ct:
+            m = re.search(rb'name="model"\r\n\r\n([^\r\n-]+)', body_bytes)
+            if m:
+                model_name = m.group(1).decode(errors="replace").strip()
+
     if not model_name:
         return JSONResponse(
             status_code=400,
@@ -135,8 +144,8 @@ async def proxy(path: str, request: Request) -> Response:
         )
 
     # --- reject image content for text-only models before touching the backend ---
-    if body and _has_image_content(body) and not model_cfg.multimodal:
-        multimodal_models = [m.name for m in cfg.models if m.multimodal]
+    if body and _has_image_content(body) and not model_cfg.accepts_image_input:
+        multimodal_models = [m.name for m in cfg.models if m.accepts_image_input]
         return JSONResponse(
             status_code=400,
             content={"error": {
@@ -154,32 +163,11 @@ async def proxy(path: str, request: Request) -> Response:
         for key, val in defaults.items():
             if key not in body:
                 body[key] = val
-        # mlx_lm.server ignores the model field for routing (model is fixed at
-        # server startup) but uses it for response metadata — pass the source ID.
+        # Rewrite the friendly alias to the full source ID the backend expects.
         body["model"] = model_cfg.source
 
-        if model_cfg.vlm:
-            # mlx_vlm.server understands enable_thinking and thinking_budget natively.
-            # Rename thinking_token_budget (our internal field) to thinking_budget,
-            # unless MTP is active — mlx_vlm rejects thinking_budget with a draft model.
-            if "thinking_token_budget" in body:
-                if model_cfg.mtp:
-                    body.pop("thinking_token_budget")
-                else:
-                    body["thinking_budget"] = body.pop("thinking_token_budget")
-            # mlx_vlm does not use chat_template_kwargs — strip it so the server
-            # doesn't choke on an unrecognised field.
-            body.pop("chat_template_kwargs", None)
-        else:
-            # Pi sends enable_thinking as a top-level field (thinkingFormat="qwen"),
-            # which mlx_lm.server ignores. For False we must move it into
-            # chat_template_kwargs so the tokenizer actually suppresses thinking.
-            # For True we leave it top-level — moving it would trigger prefill.
-            if body.get("enable_thinking") is False:
-                chat_kwargs = body.get("chat_template_kwargs") or {}
-                chat_kwargs["enable_thinking"] = False
-                body["chat_template_kwargs"] = chat_kwargs
-                del body["enable_thinking"]
+        # Backend-specific request rewriting (thinking-budget handling, etc.).
+        model_cfg.resolve_backend().transform_request(body, model_cfg)
 
         body_bytes = json.dumps(body).encode()
 

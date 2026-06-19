@@ -8,10 +8,15 @@ import socket
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO, TYPE_CHECKING
 
 from .config import ModelConfig, ServerConfig
+
+if TYPE_CHECKING:
+    from .backends import Backend
 
 
 def _bin(name: str) -> str:
@@ -26,7 +31,65 @@ def _bin(name: str) -> str:
         f"'{name}' not found. Make sure it is installed in the same environment as mlx-server."
     )
 
+
 STATE_DIR = Path("~/.local/share/mlx").expanduser()
+VENV_DIR = STATE_DIR / "venvs"
+
+
+def _backend_python(env: str) -> str:
+    """Return the Python executable for an isolated backend env.
+
+    Non-`main` backends live in isolated venvs under ~/.local/share/mlx/venvs/<env>/
+    so they can install packages that conflict with the main tool venv (e.g. mflux pins
+    an older mlx than mlx-vlm requires). These venvs are auto-provisioned on first model
+    start, or created explicitly with: mlx install <env>
+    """
+    venv_python = VENV_DIR / env / "bin" / "python3"
+    if venv_python.exists():
+        return str(venv_python)
+    raise FileNotFoundError(
+        f"No isolated venv found for backend env '{env}' at {venv_python.parent}. "
+        f"Run: mlx install {env}"
+    )
+
+
+def provision_env(env: str, packages: Sequence[str], log_fh: IO[str] | None = None) -> None:
+    """Create the isolated venv `env` and install `packages` into it.
+
+    Output goes to `log_fh` if given (auto-provision during a model start), else
+    to the console (explicit `mlx install`). Idempotent enough: re-running just
+    recreates/upgrades.
+    """
+    venv_dir = VENV_DIR / env
+    redirect = {"stdout": log_fh, "stderr": subprocess.STDOUT} if log_fh else {}
+
+    def _say(msg: str) -> None:
+        if log_fh is not None:
+            log_fh.write(msg + "\n")
+            log_fh.flush()
+        else:
+            print(msg, flush=True)
+
+    _say(f"[mlx] creating venv at {venv_dir}")
+    subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True, **redirect)
+    pip = venv_dir / "bin" / "pip"
+    _say(f"[mlx] installing into '{env}': {' '.join(packages)}")
+    subprocess.run([str(pip), "install", "--upgrade", *packages], check=True, **redirect)
+    _say(f"[mlx] backend env '{env}' ready")
+
+
+def ensure_backend_env(backend: "Backend", log_fh: IO[str] | None = None) -> None:
+    """Auto-provision an isolated backend venv on first use (no-op for env=='main')."""
+    if backend.env == "main":
+        return
+    if (VENV_DIR / backend.env / "bin" / "python3").exists():
+        return
+    if log_fh is not None:
+        log_fh.write(f"[mlx] backend env '{backend.env}' missing — provisioning...\n")
+        log_fh.flush()
+    provision_env(backend.env, backend.packages, log_fh=log_fh)
+
+
 PID_FILE = STATE_DIR / "pids.json"
 LOG_DIR = STATE_DIR / "logs"
 
@@ -95,6 +158,9 @@ def start_model(model: ModelConfig) -> int:
 
     log = _log_path(model.name)
     with log.open("a") as fh:
+        # Auto-provision the isolated venv on first use (slow; logged to the model's
+        # log file so `mlx logs NAME` shows progress). Blocks before launch.
+        ensure_backend_env(model.resolve_backend(), log_fh=fh)
         proc = subprocess.Popen(
             model.server_args(),
             stdin=subprocess.DEVNULL,

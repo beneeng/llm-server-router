@@ -2,26 +2,31 @@
 mlx — personal MLX LLM server CLI
 
 Commands:
-  mlx start  [--model NAME]   start all models (or one) + router
-  mlx stop   [--model NAME]   stop all (or one); stops router first on full stop
-  mlx status                  show table of all processes
-  mlx logs   [MODEL]          tail the log for a model (default: router)
-  mlx models                  list models from config
+  mlx start    [--model NAME]   start all models (or one) + router
+  mlx stop     [--model NAME]   stop all (or one); stops router first on full stop
+  mlx status                    show table of all processes
+  mlx logs     [MODEL]          tail the log for a model (default: router)
+  mlx models                    list models from config
+  mlx install  <env> | --all    create isolated venv(s) for optional backends
 """
 from __future__ import annotations
 
 import subprocess
+import sys
 import time
+from pathlib import Path
 from typing import Optional
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
+from .backends import BACKENDS
 from .config import load_config
 from .manager import (
     ROUTER_NAME,
     ProcessStatus,
+    provision_env,
     start_model,
     start_router,
     status_all,
@@ -244,6 +249,61 @@ def memory_cmd() -> None:
         console.print(f"[red]Free RAM {free_gb:.1f} GB below floor {floor:.1f} GB — new model starts will be refused[/red]")
 
 
+def _installable_envs() -> dict[str, list[str]]:
+    """Map each optional backend env → the union of packages backends declare for it.
+
+    Derived from the registry so a new backend is installable with no edits here.
+    `main` (the tool venv, installed by `uv tool install`) is excluded.
+    """
+    envs: dict[str, list[str]] = {}
+    for b in BACKENDS.values():
+        if b.env == "main":
+            continue
+        pkgs = envs.setdefault(b.env, [])
+        for p in b.packages:
+            if p not in pkgs:
+                pkgs.append(p)
+    return envs
+
+
+@app.command(name="install")
+def install_backend(
+    env: Optional[str] = typer.Argument(None, help="Backend env to install, e.g. 'audio' or 'image'"),
+    all_: bool = typer.Option(False, "--all", help="Install every optional backend env"),
+) -> None:
+    """Create isolated venv(s) for optional backends.
+
+    Optional backends (audio, image, ...) have Python dependencies that conflict
+    with the main LLM stack (mflux pins an older mlx than mlx-vlm requires). Each
+    runs in its own venv under ~/.local/share/mlx/venvs/<env>/ so the conflicts
+    never surface. These are also auto-provisioned on first model start — this
+    command just pre-warms them.
+
+    \b
+    Examples:
+      mlx install audio   # installs mlx-audio (Kokoro TTS, Whisper STT, ...)
+      mlx install image   # installs mflux (FLUX.1-schnell, FLUX.1-dev, ...)
+      mlx install --all   # installs every optional backend env
+    """
+    envs = _installable_envs()
+
+    if all_:
+        targets = list(envs)
+    elif env is None:
+        console.print(f"[red]Specify a backend env or --all. Available: {list(envs)}[/red]")
+        raise typer.Exit(1)
+    elif env not in envs:
+        console.print(f"[red]Unknown backend env '{env}'. Available: {list(envs)}[/red]")
+        raise typer.Exit(1)
+    else:
+        targets = [env]
+
+    for name in targets:
+        console.print(f"Installing backend env [cyan]{name}[/cyan]: {' '.join(envs[name])}")
+        provision_env(name, envs[name])
+        console.print(f"[green]✓[/green] {name} ready.")
+
+
 @app.command(name="models")
 def list_models() -> None:
     """List models defined in the config."""
@@ -251,6 +311,8 @@ def list_models() -> None:
 
     table = Table(show_header=True, header_style="bold")
     table.add_column("Name")
+    table.add_column("Backend")
+    table.add_column("Modality")
     table.add_column("Source")
     table.add_column("Port", justify="right")
     table.add_column("Lazy")
@@ -258,11 +320,19 @@ def list_models() -> None:
 
     for m in cfg.models:
         d = m.defaults
+        if m.modality == "image":
+            defaults_str = f"steps={d.steps} / guidance={d.guidance_scale} / {d.width}x{d.height} / seed={d.seed}"
+        elif m.modality == "audio":
+            defaults_str = f"temp={d.temperature} / top_p={d.top_p} / top_k={d.top_k}"
+        else:
+            defaults_str = f"{d.temperature} / {d.top_p} / {d.top_k} / {d.repetition_penalty} / {d.repetition_context_size} / {d.max_tokens} / {d.thinking_token_budget}"
         table.add_row(
             m.name,
+            m.backend,
+            m.modality,
             m.source,
             str(m.port),
             "✓" if m.lazy else "",
-            f"{d.temperature} / {d.top_p} / {d.top_k} / {d.repetition_penalty} / {d.repetition_context_size} / {d.max_tokens} / {d.thinking_token_budget}",
+            defaults_str,
         )
     console.print(table)

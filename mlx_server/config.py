@@ -2,15 +2,21 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from pydantic import BaseModel, model_validator
+
+from .backends import BACKENDS
+
+if TYPE_CHECKING:
+    from .backends import Backend
 
 CONFIG_PATH = Path(os.environ.get("MLX_CONFIG", "~/.config/mlx/models.yaml")).expanduser()
 
 
 class ModelDefaults(BaseModel):
+    # LLM generation
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
@@ -19,6 +25,12 @@ class ModelDefaults(BaseModel):
     min_p: float | None = None
     max_tokens: int | None = None
     thinking_token_budget: int | None = None
+    # Image generation
+    steps: int | None = None
+    guidance_scale: float | None = None
+    width: int | None = None
+    height: int | None = None
+    seed: int | None = None
 
     def as_request_fields(self) -> dict[str, Any]:
         """Return only the fields that have non-None values."""
@@ -28,17 +40,20 @@ class ModelDefaults(BaseModel):
 class ModelConfig(BaseModel):
     name: str
     source: str
-    # Arbitrary extra flags forwarded verbatim to mlx_lm.server, e.g.:
+    # Arbitrary extra flags forwarded verbatim to the backend subprocess, e.g.:
     #   ["--chat-template-args", '{"enable_thinking": false}']
     #   ["--decode-concurrency", "16"]
+    #   ["--quantize", "8"]  (for mflux image models)
     extra_args: list[str] = []
     defaults: ModelDefaults = ModelDefaults()
     protected: bool = False
-    # True for models that accept image_url content blocks (Gemma4, qwen3_5_moe VL, etc.).
-    multimodal: bool = False
-    # True → start via mlx_vlm.server (full vision pipeline, per-request thinking_budget).
-    # False → start via mlx_lm_wrapper.py (text-only, ThinkingBudgetProcessor patch).
-    vlm: bool = False
+    # Which serving engine runs this model. Must be a key in backends.BACKENDS
+    # (e.g. "mlx-lm", "mlx-vlm", "mlx-audio", "mflux"). The backend determines the
+    # wrapper, the Python env, capabilities, and request transforms.
+    backend: str = "mlx-lm"
+    # Override for image-url input support. None → use the backend's default
+    # (e.g. a model on the mlx-lm backend that should still accept image content).
+    multimodal: bool | None = None
     # True → MTP speculative decoding is active; thinking_token_budget is incompatible
     # and is stripped by the router rather than forwarded as thinking_budget.
     mtp: bool = False
@@ -57,29 +72,34 @@ class ModelConfig(BaseModel):
     # Assigned at load time by ServerConfig
     port: int = 0
 
+    @model_validator(mode="after")
+    def _check_backend(self) -> "ModelConfig":
+        if self.backend not in BACKENDS:
+            raise ValueError(
+                f"Unknown backend {self.backend!r} for model {self.name!r}. "
+                f"Valid backends: {sorted(BACKENDS)}"
+            )
+        return self
+
+    def resolve_backend(self) -> "Backend":
+        return BACKENDS[self.backend]
+
+    @property
+    def modality(self) -> str:
+        """Output modality, derived from the backend (for display/routing)."""
+        return self.resolve_backend().primary_modality()
+
+    @property
+    def accepts_image_input(self) -> bool:
+        if self.multimodal is not None:
+            return self.multimodal
+        return self.resolve_backend().accepts_image_input
+
     def backend_url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
     def server_args(self) -> list[str]:
-        from .manager import _bin
-        from pathlib import Path as _Path
-        if self.vlm:
-            vlm_wrapper = str(_Path(__file__).parent / "mlx_vlm_wrapper.py")
-            return [
-                _bin("python3"), vlm_wrapper,
-                "--model", self.source,
-                "--port", str(self.port),
-                "--host", "127.0.0.1",
-                "--trust-remote-code",
-                *( ["--enable-thinking"] if self.thinking else [] ),
-            ] + self.extra_args
-        wrapper = str(_Path(__file__).parent / "mlx_lm_wrapper.py")
-        return [
-            _bin("python3"), wrapper,
-            "--model", self.source,
-            "--port", str(self.port),
-            "--trust-remote-code",
-        ] + self.extra_args
+        return self.resolve_backend().build_args(self, self.port)
 
 
 class ServerConfig(BaseModel):

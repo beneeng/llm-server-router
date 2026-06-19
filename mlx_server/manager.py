@@ -97,6 +97,7 @@ def start_model(model: ModelConfig) -> int:
     with log.open("a") as fh:
         proc = subprocess.Popen(
             model.server_args(),
+            stdin=subprocess.DEVNULL,
             stdout=fh,
             stderr=subprocess.STDOUT,
             start_new_session=True,
@@ -138,6 +139,7 @@ def start_router(cfg: ServerConfig) -> int:
                 "--port", str(cfg.port),
                 "--log-level", "info",
             ],
+            stdin=subprocess.DEVNULL,
             stdout=fh,
             stderr=subprocess.STDOUT,
             start_new_session=True,

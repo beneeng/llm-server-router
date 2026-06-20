@@ -202,6 +202,19 @@ Never use `temperature: 0` with Qwen3 thinking mode — explicitly prohibited in
 ### Router config is loaded once at startup
 `_cfg` in `router.py` is a module-level singleton. Config changes require restarting the router (`mlx stop --router && mlx start --router`).
 
+### FLUX.2 model family — what's available and what isn't
+
+Black Forest Labs released FLUX.2 on November 25, 2025. Four variants exist:
+
+| variant | weights | HuggingFace | notes |
+|---|---|---|---|
+| [pro] | API only | — | managed API, ~$0.03/MP via [bfl.ai](https://bfl.ai/models/flux-2) |
+| [flex] | API only | — | developer API tier, ~$0.06/MP |
+| [dev] | **open weights** | [black-forest-labs/FLUX.2-dev](https://huggingface.co/black-forest-labs/FLUX.2-dev) | 32B, text-to-image + editing; ComfyUI day-0 support |
+| [klein] | open weights (Apache 2.0) | [FLUX.2-klein-4B](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B) / [9B](https://huggingface.co/black-forest-labs/FLUX.2-klein-9B) | fast, 4-step distilled; **what this stack uses** |
+
+**FLUX.2 [dev] is not supported by mflux** (as of 0.18.0, the latest). It is a fundamentally different architecture — a 32B flow transformer coupled with a Mistral-3 24B vision-language model — and requires its own `Flux2Dev` class that mflux has not yet implemented. Watch [mflux releases](https://github.com/filipstrand/mflux/releases) for when support lands. In the meantime FLUX.2 [dev] runs well in ComfyUI on a 24 GB CUDA GPU.
+
 ### mflux loads before port is ready
 The image wrapper loads weights synchronously before starting uvicorn, so the port becomes available only after model weights are in memory (~5–30 s). The MemoryManager polls for up to 120 s, which is enough for FLUX 8-bit on any supported Mac.
 

@@ -161,12 +161,15 @@ def start_model(model: ModelConfig) -> int:
         # Auto-provision the isolated venv on first use (slow; logged to the model's
         # log file so `mlx logs NAME` shows progress). Blocks before launch.
         ensure_backend_env(model.resolve_backend(), log_fh=fh)
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
             model.server_args(),
             stdin=subprocess.DEVNULL,
             stdout=fh,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            env=env,
         )
 
     # Brief pause to catch immediate failures (e.g. bad args)

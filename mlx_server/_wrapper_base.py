@@ -37,4 +37,4 @@ def add_health(app: FastAPI, info: Callable[[], dict]) -> None:
 
 def serve(app: FastAPI, host: str, port: int) -> None:
     """Run the app with the standard single-worker uvicorn config."""
-    uvicorn.run(app, host=host, port=port, log_level="error", workers=1)
+    uvicorn.run(app, host=host, port=port, log_level="info", workers=1)

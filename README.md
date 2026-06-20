@@ -204,3 +204,22 @@ Never use `temperature: 0` with Qwen3 thinking mode — explicitly prohibited in
 
 ### mflux loads before port is ready
 The image wrapper loads weights synchronously before starting uvicorn, so the port becomes available only after model weights are in memory (~5–30 s). The MemoryManager polls for up to 120 s, which is enough for FLUX 8-bit on any supported Mac.
+
+### Large model downloads stalling mid-way (hf-transfer / hf-xet)
+HuggingFace's accelerated downloaders (`hf-transfer` and `hf-xet`) use parallel chunk workers that can silently stall at arbitrary byte offsets for large files. If `mlx logs <model>` shows the download frozen for more than a few minutes, kill the process and retry with both disabled:
+
+```bash
+# Kill the stalled model process
+mlx stop --model <name>
+
+# Re-download with plain sequential HTTP (resumes from partial .incomplete blob)
+HF_HUB_ENABLE_HF_TRANSFER=0 HF_HUB_DISABLE_XET=1 \
+  ~/.local/share/mlx/venvs/image/bin/python3 -c "
+from huggingface_hub import hf_hub_download
+hf_hub_download(repo_id='<org/repo>', filename='<path/to/file.safetensors>', force_download=True)
+"
+
+mlx start --model <name>
+```
+
+Plain HTTP uses a single stream with proper Range-header resuming and does not exhibit the chunk-stall behaviour.

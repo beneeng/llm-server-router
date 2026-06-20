@@ -76,7 +76,8 @@ add_health(app, lambda: {"model": _model_source, "status": "ok"})
 
 
 @app.post("/v1/images/generations")
-def generate_images(request: ImageGenRequest):
+async def generate_images(request: ImageGenRequest):
+    print(f"generate: prompt={request.prompt!r:.60} n={request.n}", flush=True)
     width = request.width
     height = request.height
     if width is None or height is None:
@@ -140,18 +141,18 @@ def main():
 
     model_path = str(Path(args.model_path).expanduser()) if args.model_path else None
 
-    from mflux.models.flux2.variants import Flux2Klein
-    from mflux.models.common.config.model_config import ModelConfig
-
-    model_config = ModelConfig.from_name(args.model)
-
     extra = []
     if lora_paths:
         extra.append(f"lora={lora_paths}")
     if model_path:
         extra.append(f"model_path={model_path}")
-    desc = f", ".join(extra) if extra else "no extras"
+    desc = ", ".join(extra) if extra else "no extras"
     print(f"Loading FLUX.2-klein model: {args.model} (quantize={args.quantize}bit, {desc})", flush=True)
+
+    from mflux.models.flux2.variants import Flux2Klein
+    from mflux.models.common.config.model_config import ModelConfig
+
+    model_config = ModelConfig.from_name(args.model)
 
     _model = Flux2Klein(
         model_config=model_config,

@@ -55,7 +55,8 @@ add_health(app, lambda: {"model": _model_source, "status": "ok"})
 
 
 @app.post("/v1/images/generations")
-def generate_images(request: ImageGenRequest):
+async def generate_images(request: ImageGenRequest):
+    print(f"generate: prompt={request.prompt!r:.60} n={request.n}", flush=True)
     from mflux import Config
 
     # width/height from request body (set by router from config defaults),
@@ -103,8 +104,8 @@ def main():
 
     _model_source = args.model
 
-    from mflux import Flux1
     print(f"Loading image model: {args.model} (quantize={args.quantize}bit)", flush=True)
+    from mflux import Flux1
     _flux = Flux1.from_alias(alias=args.model, quantize=args.quantize)
     print(f"Model loaded. Starting server on {args.host}:{args.port}", flush=True)
 

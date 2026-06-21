@@ -102,21 +102,19 @@ async def _run_edit_generate(request: ImageGenRequest) -> JSONResponse:
             f.close()
             tmp_files.append(f.name)
 
-        images_data = []
-        for i in range(max(1, request.n)):
-            result = _model.generate_image(
-                seed=base_seed + i,
-                prompt=request.prompt,
-                num_inference_steps=steps,
-                height=height,
-                width=width,
-                guidance=guidance,
-                image_paths=tmp_files if tmp_files else None,
-            )
-            buf = io.BytesIO()
-            result.image.save(buf, format="PNG")
-            b64_out = base64.b64encode(buf.getvalue()).decode()
-            images_data.append({"b64_json": b64_out, "revised_prompt": request.prompt})
+        result = _model.generate_image(
+            seed=base_seed,
+            prompt=request.prompt,
+            num_inference_steps=steps,
+            height=height,
+            width=width,
+            guidance=guidance,
+            image_paths=tmp_files if tmp_files else None,
+        )
+        buf = io.BytesIO()
+        result.image.save(buf, format="PNG")
+        b64_out = base64.b64encode(buf.getvalue()).decode()
+        images_data = [{"b64_json": b64_out, "revised_prompt": request.prompt}]
 
     finally:
         for p in tmp_files:

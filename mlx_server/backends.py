@@ -153,10 +153,14 @@ class Mflux(Backend):
 
 
 class Mflux2(Backend):
-    """FLUX.2-klein image generation via mflux (shares the image isolated venv).
+    """FLUX.2-klein unified image generation via mflux (isolated image venv).
 
-    Uses Flux2Klein (not Flux1) — different API, guidance=1.0 default, 4-step distilled.
-    Supports LoRA via --lora-paths and abliterated text encoder via --model-path.
+    Uses Flux2KleinEdit — supports both text-to-image and image-to-image:
+    - images: list[str]  base64 reference images (img2img / multi-image conditioning)
+    - image_strength: float 0-1  denoising strength (None = full conditioning)
+    - use_kv_cache: bool  cache reference KV states for faster n>1 batches
+    Exposes /v1/images/generations and /v1/images/edits.
+    Supports LoRA via --lora-paths and abliterated encoder via --model-path.
     """
 
     name = "mflux2"
@@ -166,23 +170,6 @@ class Mflux2(Backend):
     modalities = frozenset({"image"})
 
 
-class Mflux2Edit(Backend):
-    """FLUX.2-klein image editing via mflux (shares the image isolated venv).
-
-    Uses Flux2KleinEdit — same weights as Flux2Klein but supports:
-    - image_paths: list of reference images for image-to-image and multi-image conditioning
-    - image_strength: denoising strength (0.0–1.0)
-    - use_kv_cache: caches reference image KV states for faster n>1 batch generation
-    Exposes both /v1/images/generations and /v1/images/edits.
-    """
-
-    name = "mflux2-edit"
-    env = "image"
-    packages = ("mflux", "fastapi", "uvicorn[standard]", "pydantic")
-    wrapper = "mflux2_edit_wrapper.py"
-    modalities = frozenset({"image"})
-
-
 BACKENDS: dict[str, Backend] = {
-    b.name: b for b in (MlxLm(), MlxVlm(), MlxAudio(), Mflux(), Mflux2(), Mflux2Edit())
+    b.name: b for b in (MlxLm(), MlxVlm(), MlxAudio(), Mflux(), Mflux2())
 }

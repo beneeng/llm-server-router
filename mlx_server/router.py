@@ -182,7 +182,7 @@ async def proxy(path: str, request: Request) -> Response:
     if body_bytes:
         headers["content-length"] = str(len(body_bytes))
 
-    is_stream = body.get("stream", False)
+    is_stream = body.get("stream", False) or request.query_params.get("sse") == "true"
     fwd_params = {k: v for k, v in request.query_params.items() if k != "model"}
 
     if is_stream:

@@ -9,20 +9,28 @@ Uses Flux2Klein, which supports:
     so less noise is added). Lower = more change. With the default 4 steps only
     3 distinct levels exist; use 8–12 steps for finer control.
 
+SSE progress streaming via ?sse=true:
+  progress: {"type":"progress","step":N,"total":N,"percent":N,"eta_seconds":N}
+  done:     {"type":"done","created":N,"data":[{"b64_json":"...","revised_prompt":"..."}]}
+  error:    {"type":"error","message":"generation aborted"}
+
 All mflux2 model entries (flux2-klein-fast, flux2-klein-hifi, etc.)
 can be used for both txt2img and img2img without any model-ID change.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
+import json
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from _wrapper_base import add_health, base_parser, serve
@@ -32,6 +40,10 @@ _model = None
 _model_mode: str = "txt2img"   # "txt2img" | "edit"
 _model_source: str = ""
 _model_init_kwargs: dict = {}
+
+
+class GenerationAborted(Exception):
+    pass
 
 
 class ImageGenRequest(BaseModel):
@@ -50,6 +62,46 @@ class ImageGenRequest(BaseModel):
     width: Optional[int] = None
     height: Optional[int] = None
     seed: Optional[int] = None
+
+
+class ProgressCallback:
+    """Registered on _model.callbacks for each request.
+
+    When queue=None (non-SSE path), only checks abort_event each step.
+    When queue is provided (SSE path), also pushes progress events to it.
+    """
+
+    def __init__(self, queue: asyncio.Queue | None, loop: asyncio.AbstractEventLoop):
+        self._queue = queue
+        self._loop = loop
+        self._step = 0
+        self._total: int = 4
+        self._t0: float = 0.0
+        self.abort_event = threading.Event()
+
+    def _push(self, item) -> None:
+        if self._queue is not None:
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, item)
+
+    def call_before_loop(self, seed, prompt, latents, config, **kw):
+        self._total = config.num_inference_steps
+        self._t0 = time.time()
+
+    def call_in_loop(self, t, seed, prompt, latents, config, time_steps, **kw):
+        if self.abort_event.is_set():
+            raise GenerationAborted()
+        self._step += 1
+        elapsed = time.time() - self._t0
+        per_step = elapsed / self._step
+        eta = round(per_step * (self._total - self._step), 1)
+        pct = int(self._step / self._total * 100)
+        self._push({
+            "type": "progress", "step": self._step,
+            "total": self._total, "percent": pct, "eta_seconds": eta,
+        })
+
+    def call_after_loop(self, seed, prompt, latents, config, **kw):
+        self._push(None)  # sentinel — generation done
 
 
 app = FastAPI()
@@ -73,141 +125,307 @@ def _ensure_mode(mode: str) -> None:
     _model_mode = mode
 
 
-async def _run_edit_generate(request: ImageGenRequest) -> JSONResponse:
+def _resolve_dims(request: ImageGenRequest) -> tuple[int, int]:
+    if request.width is not None and request.height is not None:
+        return request.width, request.height
+    try:
+        w_str, h_str = request.size.split("x")
+        return int(w_str), int(h_str)
+    except (ValueError, AttributeError):
+        return 1024, 1024
+
+
+def _write_tmp_files(images: list[str] | None) -> list[str]:
+    tmp: list[str] = []
+    for b64 in (images or []):
+        f = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        f.write(base64.b64decode(b64))
+        f.close()
+        tmp.append(f.name)
+    return tmp
+
+
+def _cleanup(tmp_files: list[str]) -> None:
+    for p in tmp_files:
+        Path(p).unlink(missing_ok=True)
+
+
+def _reset_callbacks() -> None:
+    from mflux.callbacks.callback_registry import CallbackRegistry
+    _model.callbacks = CallbackRegistry()
+
+
+async def _run_edit_generate(request: ImageGenRequest, http_req: Request) -> JSONResponse:
     _ensure_mode("edit")
 
-    width = request.width
-    height = request.height
-    if width is None or height is None:
-        try:
-            w_str, h_str = request.size.split("x")
-            width, height = int(w_str), int(h_str)
-        except (ValueError, AttributeError):
-            width, height = 1024, 1024
-
+    width, height = _resolve_dims(request)
     steps = request.steps or 4
     guidance = request.guidance_scale if request.guidance_scale is not None else 1.0
     base_seed = request.seed if request.seed is not None else int(time.time())
     n_ref = len(request.images) if request.images else 0
-    print(
-        f"edit: prompt={request.prompt!r:.60} n={request.n} ref_images={n_ref}",
-        flush=True,
-    )
+    print(f"edit: prompt={request.prompt!r:.60} ref_images={n_ref}", flush=True)
 
-    tmp_files: list[str] = []
-    try:
-        for b64 in (request.images or []):
-            f = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-            f.write(base64.b64decode(b64))
-            f.close()
-            tmp_files.append(f.name)
+    tmp_files = _write_tmp_files(request.images)
+    loop = asyncio.get_running_loop()
+    cb = ProgressCallback(queue=None, loop=loop)
+    _model.callbacks.register(cb)
 
-        result = _model.generate_image(
-            seed=base_seed,
-            prompt=request.prompt,
-            num_inference_steps=steps,
-            height=height,
-            width=width,
-            guidance=guidance,
-            image_paths=tmp_files if tmp_files else None,
-        )
-        buf = io.BytesIO()
-        result.image.save(buf, format="PNG")
-        b64_out = base64.b64encode(buf.getvalue()).decode()
-        images_data = [{"b64_json": b64_out, "revised_prompt": request.prompt}]
-
-    finally:
-        for p in tmp_files:
-            Path(p).unlink(missing_ok=True)
-
-    return JSONResponse({"created": int(time.time()), "data": images_data})
-
-
-async def _run_generate(request: ImageGenRequest) -> JSONResponse:
-    if request.edit_mode and request.images:
-        return await _run_edit_generate(request)
-    _ensure_mode("txt2img")
-    n_ref = len(request.images) if request.images else 0
-    print(
-        f"generate: prompt={request.prompt!r:.60} n={request.n} ref_images={n_ref}",
-        flush=True,
-    )
-
-    width = request.width
-    height = request.height
-    if width is None or height is None:
+    def _generate():
         try:
-            w_str, h_str = request.size.split("x")
-            width, height = int(w_str), int(h_str)
-        except (ValueError, AttributeError):
-            width, height = 1024, 1024
-
-    steps = request.steps or 4
-    guidance = request.guidance_scale if request.guidance_scale is not None else 1.0
-
-    tmp_files: list[str] = []
-    try:
-        if request.images:
-            for b64 in request.images:
-                f = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-                f.write(base64.b64decode(b64))
-                f.close()
-                tmp_files.append(f.name)
-
-        # Flux2Klein takes a single image_path (uses first reference image)
-        image_path = tmp_files[0] if tmp_files else None
-        images_data = []
-        base_seed = request.seed if request.seed is not None else int(time.time())
-
-        if request.n > 1:
-            # Batch path: text encoder runs once, one transformer pass per denoising step for all N
-            seeds = [base_seed + i for i in range(request.n)]
-            results = _model.generate_images(
-                seeds=seeds,
-                prompt=request.prompt,
-                num_inference_steps=steps,
-                height=height,
-                width=width,
-                guidance=guidance,
-                image_path=image_path,
-                image_strength=request.image_strength,
-            )
-            for result in results:
-                buf = io.BytesIO()
-                result.image.save(buf, format="PNG")
-                b64_out = base64.b64encode(buf.getvalue()).decode()
-                images_data.append({"b64_json": b64_out, "revised_prompt": request.prompt})
-        else:
-            result = _model.generate_image(
+            return _model.generate_image(
                 seed=base_seed,
                 prompt=request.prompt,
                 num_inference_steps=steps,
                 height=height,
                 width=width,
                 guidance=guidance,
-                image_path=image_path,
-                image_strength=request.image_strength,
+                image_paths=tmp_files if tmp_files else None,
             )
+        except GenerationAborted:
+            return None
+        finally:
+            _reset_callbacks()
+            _cleanup(tmp_files)
+
+    async def _watch():
+        while True:
+            if await http_req.is_disconnected():
+                cb.abort_event.set()
+                return
+            await asyncio.sleep(0.3)
+
+    watcher = asyncio.create_task(_watch())
+    try:
+        result = await asyncio.to_thread(_generate)
+    finally:
+        watcher.cancel()
+
+    if result is None:
+        print("[mflux2] edit generation aborted (client disconnected)", flush=True)
+        return JSONResponse({"created": int(time.time()), "data": []})
+
+    buf = io.BytesIO()
+    result.image.save(buf, format="PNG")
+    b64_out = base64.b64encode(buf.getvalue()).decode()
+    return JSONResponse({
+        "created": int(time.time()),
+        "data": [{"b64_json": b64_out, "revised_prompt": request.prompt}],
+    })
+
+
+async def _run_generate(request: ImageGenRequest, http_req: Request) -> JSONResponse:
+    if request.edit_mode and request.images:
+        return await _run_edit_generate(request, http_req)
+    _ensure_mode("txt2img")
+
+    n_ref = len(request.images) if request.images else 0
+    print(f"generate: prompt={request.prompt!r:.60} n={request.n} ref_images={n_ref}", flush=True)
+
+    width, height = _resolve_dims(request)
+    steps = request.steps or 4
+    guidance = request.guidance_scale if request.guidance_scale is not None else 1.0
+    base_seed = request.seed if request.seed is not None else int(time.time())
+    tmp_files = _write_tmp_files(request.images)
+    image_path = tmp_files[0] if tmp_files else None  # Flux2Klein takes a single path
+    loop = asyncio.get_running_loop()
+
+    if request.n > 1:
+        # Batch path: generate_images has no step callbacks so cannot abort mid-generation.
+        # Run in thread so the event loop stays free; discard result if client disconnected.
+        disconnected = False
+
+        def _batch():
+            try:
+                seeds = [base_seed + i for i in range(request.n)]
+                return _model.generate_images(
+                    seeds=seeds,
+                    prompt=request.prompt,
+                    num_inference_steps=steps,
+                    height=height,
+                    width=width,
+                    guidance=guidance,
+                    image_path=image_path,
+                    image_strength=request.image_strength,
+                )
+            finally:
+                _cleanup(tmp_files)
+
+        async def _watch_batch():
+            nonlocal disconnected
+            while True:
+                if await http_req.is_disconnected():
+                    disconnected = True
+                    print("[mflux2] client disconnected (batch cannot be aborted, discarding result)", flush=True)
+                    return
+                await asyncio.sleep(0.3)
+
+        watcher = asyncio.create_task(_watch_batch())
+        try:
+            results = await asyncio.to_thread(_batch)
+        finally:
+            watcher.cancel()
+
+        if disconnected:
+            return JSONResponse({"created": int(time.time()), "data": []})
+
+        images_data = []
+        for result in results:
             buf = io.BytesIO()
             result.image.save(buf, format="PNG")
             b64_out = base64.b64encode(buf.getvalue()).decode()
             images_data.append({"b64_json": b64_out, "revised_prompt": request.prompt})
+        return JSONResponse({"created": int(time.time()), "data": images_data})
 
-    finally:
-        for p in tmp_files:
-            Path(p).unlink(missing_ok=True)
+    else:
+        cb = ProgressCallback(queue=None, loop=loop)
+        _model.callbacks.register(cb)
 
-    return JSONResponse({"created": int(time.time()), "data": images_data})
+        def _single():
+            try:
+                return _model.generate_image(
+                    seed=base_seed,
+                    prompt=request.prompt,
+                    num_inference_steps=steps,
+                    height=height,
+                    width=width,
+                    guidance=guidance,
+                    image_path=image_path,
+                    image_strength=request.image_strength,
+                )
+            except GenerationAborted:
+                return None
+            finally:
+                _reset_callbacks()
+                _cleanup(tmp_files)
+
+        async def _watch_single():
+            while True:
+                if await http_req.is_disconnected():
+                    cb.abort_event.set()
+                    return
+                await asyncio.sleep(0.3)
+
+        watcher = asyncio.create_task(_watch_single())
+        try:
+            result = await asyncio.to_thread(_single)
+        finally:
+            watcher.cancel()
+
+        if result is None:
+            print("[mflux2] generation aborted (client disconnected)", flush=True)
+            return JSONResponse({"created": int(time.time()), "data": []})
+
+        buf = io.BytesIO()
+        result.image.save(buf, format="PNG")
+        b64_out = base64.b64encode(buf.getvalue()).decode()
+        return JSONResponse({
+            "created": int(time.time()),
+            "data": [{"b64_json": b64_out, "revised_prompt": request.prompt}],
+        })
+
+
+async def _run_generate_sse(request: ImageGenRequest, http_req: Request) -> StreamingResponse:
+    """SSE path: always single-image (generate_images batch has no step callbacks)."""
+    use_edit = bool(request.edit_mode and request.images)
+    if use_edit:
+        _ensure_mode("edit")
+    else:
+        _ensure_mode("txt2img")
+
+    width, height = _resolve_dims(request)
+    steps = request.steps or 4
+    guidance = request.guidance_scale if request.guidance_scale is not None else 1.0
+    base_seed = request.seed if request.seed is not None else int(time.time())
+    n_ref = len(request.images) if request.images else 0
+    print(f"{'edit' if use_edit else 'generate'}(sse): prompt={request.prompt!r:.60} ref_images={n_ref}", flush=True)
+
+    tmp_files = _write_tmp_files(request.images)
+    queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+    cb = ProgressCallback(queue=queue, loop=loop)
+    _model.callbacks.register(cb)
+
+    def _generate():
+        try:
+            if use_edit:
+                return _model.generate_image(
+                    seed=base_seed,
+                    prompt=request.prompt,
+                    num_inference_steps=steps,
+                    height=height,
+                    width=width,
+                    guidance=guidance,
+                    image_paths=tmp_files if tmp_files else None,
+                )
+            else:
+                return _model.generate_image(
+                    seed=base_seed,
+                    prompt=request.prompt,
+                    num_inference_steps=steps,
+                    height=height,
+                    width=width,
+                    guidance=guidance,
+                    image_path=tmp_files[0] if tmp_files else None,
+                    image_strength=request.image_strength,
+                )
+        except GenerationAborted:
+            return None
+        finally:
+            _reset_callbacks()
+            _cleanup(tmp_files)
+            # Push sentinel even on abort so event_stream doesn't hang.
+            # (call_after_loop does this for normal completion; this covers abort.)
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+
+    gen_task = asyncio.create_task(asyncio.to_thread(_generate))
+
+    async def _watch():
+        while not gen_task.done():
+            if await http_req.is_disconnected():
+                cb.abort_event.set()
+                return
+            await asyncio.sleep(0.3)
+
+    watcher = asyncio.create_task(_watch())
+
+    async def event_stream():
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+                if event is None:  # sentinel
+                    break
+                yield f"data: {json.dumps(event)}\n\n"
+
+            result = await gen_task
+            if result is None:
+                print("[mflux2] SSE generation aborted (client disconnected)", flush=True)
+                yield f"data: {json.dumps({'type': 'error', 'message': 'generation aborted'})}\n\n"
+            else:
+                buf = io.BytesIO()
+                result.image.save(buf, format="PNG")
+                b64_out = base64.b64encode(buf.getvalue()).decode()
+                yield f"data: {json.dumps({'type': 'done', 'created': int(time.time()), 'data': [{'b64_json': b64_out, 'revised_prompt': request.prompt}]})}\n\n"
+        finally:
+            watcher.cancel()
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @app.post("/v1/images/generations")
-async def generate_images(request: ImageGenRequest):
-    return await _run_generate(request)
+async def generate_images(request: ImageGenRequest, http_req: Request, sse: bool = False):
+    if sse:
+        return await _run_generate_sse(request, http_req)
+    return await _run_generate(request, http_req)
 
 
 @app.post("/v1/images/edits")
-async def edit_images(request: ImageGenRequest):
-    return await _run_generate(request)
+async def edit_images(request: ImageGenRequest, http_req: Request, sse: bool = False):
+    if sse:
+        return await _run_generate_sse(request, http_req)
+    return await _run_generate(request, http_req)
 
 
 def main():

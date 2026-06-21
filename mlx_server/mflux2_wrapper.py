@@ -84,9 +84,27 @@ async def _run_generate(request: ImageGenRequest) -> JSONResponse:
         images_data = []
         base_seed = request.seed if request.seed is not None else int(time.time())
 
-        for i in range(max(1, request.n)):
+        if request.n > 1:
+            # Batch path: text encoder runs once, one transformer pass per denoising step for all N
+            seeds = [base_seed + i for i in range(request.n)]
+            results = _model.generate_images(
+                seeds=seeds,
+                prompt=request.prompt,
+                num_inference_steps=steps,
+                height=height,
+                width=width,
+                guidance=guidance,
+                image_path=image_path,
+                image_strength=request.image_strength,
+            )
+            for result in results:
+                buf = io.BytesIO()
+                result.image.save(buf, format="PNG")
+                b64_out = base64.b64encode(buf.getvalue()).decode()
+                images_data.append({"b64_json": b64_out, "revised_prompt": request.prompt})
+        else:
             result = _model.generate_image(
-                seed=base_seed + i,
+                seed=base_seed,
                 prompt=request.prompt,
                 num_inference_steps=steps,
                 height=height,

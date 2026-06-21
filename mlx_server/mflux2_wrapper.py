@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import concurrent.futures
 import io
 import json
 import tempfile
@@ -40,6 +41,7 @@ _model = None
 _model_mode: str = "txt2img"   # "txt2img" | "edit"
 _model_source: str = ""
 _model_init_kwargs: dict = {}
+_mlx_executor: concurrent.futures.ThreadPoolExecutor | None = None
 
 
 class GenerationAborted(Exception):
@@ -156,8 +158,6 @@ def _reset_callbacks() -> None:
 
 
 async def _run_edit_generate(request: ImageGenRequest, http_req: Request) -> JSONResponse:
-    _ensure_mode("edit")
-
     width, height = _resolve_dims(request)
     steps = request.steps or 4
     guidance = request.guidance_scale if request.guidance_scale is not None else 1.0
@@ -168,9 +168,10 @@ async def _run_edit_generate(request: ImageGenRequest, http_req: Request) -> JSO
     tmp_files = _write_tmp_files(request.images)
     loop = asyncio.get_running_loop()
     cb = ProgressCallback(queue=None, loop=loop)
-    _model.callbacks.register(cb)
 
     def _generate():
+        _ensure_mode("edit")
+        _model.callbacks.register(cb)
         try:
             return _model.generate_image(
                 seed=base_seed,
@@ -196,7 +197,7 @@ async def _run_edit_generate(request: ImageGenRequest, http_req: Request) -> JSO
 
     watcher = asyncio.create_task(_watch())
     try:
-        result = await asyncio.to_thread(_generate)
+        result = await loop.run_in_executor(_mlx_executor, _generate)
     finally:
         watcher.cancel()
 
@@ -216,7 +217,6 @@ async def _run_edit_generate(request: ImageGenRequest, http_req: Request) -> JSO
 async def _run_generate(request: ImageGenRequest, http_req: Request) -> JSONResponse:
     if request.edit_mode and request.images:
         return await _run_edit_generate(request, http_req)
-    _ensure_mode("txt2img")
 
     n_ref = len(request.images) if request.images else 0
     print(f"generate: prompt={request.prompt!r:.60} n={request.n} ref_images={n_ref}", flush=True)
@@ -231,10 +231,11 @@ async def _run_generate(request: ImageGenRequest, http_req: Request) -> JSONResp
 
     if request.n > 1:
         # Batch path: generate_images has no step callbacks so cannot abort mid-generation.
-        # Run in thread so the event loop stays free; discard result if client disconnected.
+        # Run on MLX thread so the event loop stays free; discard result if client disconnected.
         disconnected = False
 
         def _batch():
+            _ensure_mode("txt2img")
             try:
                 seeds = [base_seed + i for i in range(request.n)]
                 return _model.generate_images(
@@ -261,7 +262,7 @@ async def _run_generate(request: ImageGenRequest, http_req: Request) -> JSONResp
 
         watcher = asyncio.create_task(_watch_batch())
         try:
-            results = await asyncio.to_thread(_batch)
+            results = await loop.run_in_executor(_mlx_executor, _batch)
         finally:
             watcher.cancel()
 
@@ -278,9 +279,10 @@ async def _run_generate(request: ImageGenRequest, http_req: Request) -> JSONResp
 
     else:
         cb = ProgressCallback(queue=None, loop=loop)
-        _model.callbacks.register(cb)
 
         def _single():
+            _ensure_mode("txt2img")
+            _model.callbacks.register(cb)
             try:
                 return _model.generate_image(
                     seed=base_seed,
@@ -307,7 +309,7 @@ async def _run_generate(request: ImageGenRequest, http_req: Request) -> JSONResp
 
         watcher = asyncio.create_task(_watch_single())
         try:
-            result = await asyncio.to_thread(_single)
+            result = await loop.run_in_executor(_mlx_executor, _single)
         finally:
             watcher.cancel()
 
@@ -327,10 +329,6 @@ async def _run_generate(request: ImageGenRequest, http_req: Request) -> JSONResp
 async def _run_generate_sse(request: ImageGenRequest, http_req: Request) -> StreamingResponse:
     """SSE path: always single-image (generate_images batch has no step callbacks)."""
     use_edit = bool(request.edit_mode and request.images)
-    if use_edit:
-        _ensure_mode("edit")
-    else:
-        _ensure_mode("txt2img")
 
     width, height = _resolve_dims(request)
     steps = request.steps or 4
@@ -343,9 +341,10 @@ async def _run_generate_sse(request: ImageGenRequest, http_req: Request) -> Stre
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
     cb = ProgressCallback(queue=queue, loop=loop)
-    _model.callbacks.register(cb)
 
     def _generate():
+        _ensure_mode("edit" if use_edit else "txt2img")
+        _model.callbacks.register(cb)
         try:
             if use_edit:
                 return _model.generate_image(
@@ -377,7 +376,7 @@ async def _run_generate_sse(request: ImageGenRequest, http_req: Request) -> Stre
             # (call_after_loop does this for normal completion; this covers abort.)
             loop.call_soon_threadsafe(queue.put_nowait, None)
 
-    gen_task = asyncio.create_task(asyncio.to_thread(_generate))
+    gen_task = loop.run_in_executor(_mlx_executor, _generate)
 
     async def _watch():
         while not gen_task.done():
@@ -429,7 +428,7 @@ async def edit_images(request: ImageGenRequest, http_req: Request, sse: bool = F
 
 
 def main():
-    global _model, _model_source, _model_init_kwargs
+    global _model, _model_source, _model_init_kwargs, _mlx_executor
 
     parser = base_parser("mflux FLUX.2-klein unified image generation server")
     parser.add_argument(
@@ -470,24 +469,31 @@ def main():
         flush=True,
     )
 
-    from mflux.models.flux2.variants.txt2img.flux2_klein import Flux2Klein
-    from mflux.models.common.config.model_config import ModelConfig
-
-    model_config = ModelConfig.from_name(args.model)
-
-    _model = Flux2Klein(
-        model_config=model_config,
-        model_path=model_path,
-        quantize=args.quantize,
-        lora_paths=lora_paths,
-        lora_scales=args.lora_scales,
-    )
     _model_init_kwargs = {
         "quantize": args.quantize,
         "lora_paths": lora_paths,
         "lora_scales": args.lora_scales,
         "model_path": model_path,
     }
+
+    # Create the dedicated MLX thread and initialise the model on it so the GPU stream
+    # is owned by that thread for the lifetime of the process.
+    _mlx_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    def _init_model():
+        global _model
+        from mflux.models.flux2.variants.txt2img.flux2_klein import Flux2Klein
+        from mflux.models.common.config.model_config import ModelConfig
+        model_config = ModelConfig.from_name(args.model)
+        _model = Flux2Klein(
+            model_config=model_config,
+            model_path=model_path,
+            quantize=args.quantize,
+            lora_paths=lora_paths,
+            lora_scales=args.lora_scales,
+        )
+
+    _mlx_executor.submit(_init_model).result()
     print(f"Model loaded. Starting server on {args.host}:{args.port}", flush=True)
 
     serve(app, args.host, args.port)

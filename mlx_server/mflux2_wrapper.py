@@ -12,7 +12,11 @@ Uses Flux2Klein, which supports:
 SSE progress streaming via ?sse=true:
   progress: {"type":"progress","step":N,"total":N,"percent":N,"eta_seconds":N}
   done:     {"type":"done","created":N,"data":[{"b64_json":"...","revised_prompt":"..."}]}
-  error:    {"type":"error","message":"generation aborted"}
+  error:    {"type":"error","message":"..."}
+
+Batch SSE (n>1, ?sse=true): generates all N images in a single tensor-batched denoising
+loop. Progress events reflect shared denoising steps (same step count regardless of n).
+The done event contains all N images. Batch cannot be aborted mid-generation.
 
 All mflux2 model entries (flux2-klein-fast, flux2-klein-hifi, etc.)
 can be used for both txt2img and img2img without any model-ID change.
@@ -34,6 +38,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from tqdm import tqdm as _tqdm_base
+
 from _wrapper_base import add_health, base_parser, serve
 
 
@@ -42,10 +48,25 @@ _model_mode: str = "txt2img"   # "txt2img" | "edit"
 _model_source: str = ""
 _model_init_kwargs: dict = {}
 _mlx_executor: concurrent.futures.ThreadPoolExecutor | None = None
+_tqdm_local = threading.local()
 
 
 class GenerationAborted(Exception):
     pass
+
+
+class _BatchProgressTqdm(_tqdm_base):
+    """Replaces tqdm in mflux's Config module to relay batch denoising progress to SSE.
+
+    _tqdm_local.push_fn is set per-request on the MLX thread before generate_images().
+    When None (all non-batch paths), behavior is identical to upstream tqdm.
+    """
+    def update(self, n=1):
+        result = super().update(n)
+        fn = getattr(_tqdm_local, 'push_fn', None)
+        if fn is not None and self.n > 0:
+            fn(self.n, self.total)
+        return result
 
 
 class ImageGenRequest(BaseModel):
@@ -327,7 +348,12 @@ async def _run_generate(request: ImageGenRequest, http_req: Request) -> JSONResp
 
 
 async def _run_generate_sse(request: ImageGenRequest, http_req: Request) -> StreamingResponse:
-    """SSE path: always single-image (generate_images batch has no step callbacks)."""
+    """SSE path for image generation and editing.
+
+    n=1: uses ProgressCallback hooked into mflux's CallbackRegistry.
+    n>1 (batch, non-edit): calls generate_images() for true tensor-batching; progress is
+         intercepted via _BatchProgressTqdm which is patched into mflux's config module.
+    """
     use_edit = bool(request.edit_mode and request.images)
 
     width, height = _resolve_dims(request)
@@ -335,11 +361,87 @@ async def _run_generate_sse(request: ImageGenRequest, http_req: Request) -> Stre
     guidance = request.guidance_scale if request.guidance_scale is not None else 1.0
     base_seed = request.seed if request.seed is not None else int(time.time())
     n_ref = len(request.images) if request.images else 0
-    print(f"{'edit' if use_edit else 'generate'}(sse): prompt={request.prompt!r:.60} ref_images={n_ref}", flush=True)
+    batch_tag = f",batch={request.n}" if request.n > 1 and not use_edit else ""
+    print(f"{'edit' if use_edit else 'generate'}(sse{batch_tag}): prompt={request.prompt!r:.60} ref_images={n_ref}", flush=True)
 
     tmp_files = _write_tmp_files(request.images)
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
+
+    if not use_edit and request.n > 1:
+        seeds = [base_seed + i for i in range(request.n)]
+        image_path = tmp_files[0] if tmp_files else None
+        t0_ref = [0.0]
+
+        def _push_batch_progress(step, total):
+            elapsed = time.time() - t0_ref[0]
+            per_step = elapsed / step
+            eta = round(per_step * (total - step), 1)
+            pct = int(step / total * 100)
+            loop.call_soon_threadsafe(queue.put_nowait, {
+                "type": "progress", "step": step, "total": total,
+                "percent": pct, "eta_seconds": eta,
+            })
+
+        def _generate_batch():
+            t0_ref[0] = time.time()
+            _tqdm_local.push_fn = _push_batch_progress
+            try:
+                _ensure_mode("txt2img")
+                return _model.generate_images(
+                    seeds=seeds,
+                    prompt=request.prompt,
+                    num_inference_steps=steps,
+                    height=height,
+                    width=width,
+                    guidance=guidance,
+                    image_path=image_path,
+                    image_strength=request.image_strength,
+                )
+            except Exception:
+                return None
+            finally:
+                _tqdm_local.push_fn = None
+                _cleanup(tmp_files)
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        gen_task = loop.run_in_executor(_mlx_executor, _generate_batch)
+
+        async def _watch_batch():
+            while not gen_task.done():
+                if await http_req.is_disconnected():
+                    print("[mflux2] client disconnected during batch SSE (cannot abort mid-generation)", flush=True)
+                    return
+                await asyncio.sleep(0.3)
+
+        watcher = asyncio.create_task(_watch_batch())
+
+        async def event_stream_batch():
+            try:
+                while True:
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        continue
+                    if event is None:
+                        break
+                    yield f"data: {json.dumps(event)}\n\n"
+                results = await gen_task
+                if results is None:
+                    yield f"data: {json.dumps({'type': 'error', 'message': 'generation failed'})}\n\n"
+                else:
+                    images_data = []
+                    for result in results:
+                        buf = io.BytesIO()
+                        result.image.save(buf, format="PNG")
+                        b64_out = base64.b64encode(buf.getvalue()).decode()
+                        images_data.append({"b64_json": b64_out, "revised_prompt": request.prompt})
+                    yield f"data: {json.dumps({'type': 'done', 'created': int(time.time()), 'data': images_data})}\n\n"
+            finally:
+                watcher.cancel()
+
+        return StreamingResponse(event_stream_batch(), media_type="text/event-stream")
+
     cb = ProgressCallback(queue=queue, loop=loop)
 
     def _generate():
@@ -494,6 +596,13 @@ def main():
         )
 
     _mlx_executor.submit(_init_model).result()
+
+    # Patch mflux's config module so Config.time_steps returns _BatchProgressTqdm.
+    # This is the only hook available for generate_images() batch progress, since that
+    # path has no CallbackRegistry support. The subclass is a no-op when push_fn is None.
+    import mflux.models.common.config.config as _mflux_cfg_mod
+    _mflux_cfg_mod.tqdm = _BatchProgressTqdm
+
     print(f"Model loaded. Starting server on {args.host}:{args.port}", flush=True)
 
     serve(app, args.host, args.port)

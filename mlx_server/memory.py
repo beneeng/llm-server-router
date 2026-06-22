@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
+import ctypes.util
 import logging
+import sys
 import time
 from collections import OrderedDict
 
@@ -15,6 +18,31 @@ log = logging.getLogger(__name__)
 _STARTUP_GRACE_SECONDS = 60.0
 
 
+def _proc_rss_bytes(pid: int) -> int:
+    """Return physical memory footprint for a process.
+
+    On macOS uses proc_pid_rusage(RUSAGE_INFO_V4) to read ri_phys_footprint,
+    which includes Metal/unified memory allocations — the same value Activity
+    Monitor displays. Falls back to psutil rss on any error or non-macOS.
+    """
+    if sys.platform == "darwin":
+        try:
+            _lib = ctypes.CDLL(
+                ctypes.util.find_library("System") or "/usr/lib/libSystem.B.dylib"
+            )
+            # Use a 4 KB scratch buffer so the call is safe regardless of the
+            # exact rusage_info_vN size on this OS version.
+            buf = ctypes.create_string_buffer(4096)
+            RUSAGE_INFO_V4 = 4
+            if _lib.proc_pid_rusage(pid, RUSAGE_INFO_V4, buf) == 0:
+                # ri_phys_footprint is the 9th field: 16-byte uuid + 7×uint64 = offset 72
+                import struct as _struct
+                return _struct.unpack_from("<Q", buf, 72)[0]
+        except Exception:
+            pass
+    return psutil.Process(pid).memory_info().rss
+
+
 def _available_memory_gb() -> float:
     return psutil.virtual_memory().available / (1024 ** 3)
 
@@ -26,7 +54,7 @@ def _total_model_rss_gb(cfg: ServerConfig) -> float:
         pid = pids.get(model.name)
         if pid and _is_alive(pid):
             try:
-                total += psutil.Process(pid).memory_info().rss
+                total += _proc_rss_bytes(pid)
             except psutil.NoSuchProcess:
                 pass
     return total / (1024 ** 3)
@@ -171,7 +199,7 @@ class MemoryManager:
             rss_gb = 0.0
             if alive and pid:
                 try:
-                    rss_bytes = psutil.Process(pid).memory_info().rss
+                    rss_bytes = _proc_rss_bytes(pid)
                     rss_gb = rss_bytes / (1024 ** 3)
                     total_bytes += rss_bytes
                 except psutil.NoSuchProcess:

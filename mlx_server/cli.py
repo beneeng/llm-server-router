@@ -185,6 +185,7 @@ def memory_cmd() -> None:
     """Show per-model memory usage and system memory pressure."""
     import psutil
     from .manager import _is_alive, _load_pids
+    from .memory import _proc_rss_bytes
 
     cfg = load_config()
     pids = _load_pids()
@@ -205,7 +206,7 @@ def memory_cmd() -> None:
         rss_gb = 0.0
         if alive and pid:
             try:
-                rss_gb = psutil.Process(pid).memory_info().rss / 1e9
+                rss_gb = _proc_rss_bytes(pid) / 1e9
                 total_gb += rss_gb
             except psutil.NoSuchProcess:
                 alive = False

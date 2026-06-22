@@ -1,0 +1,841 @@
+openapi: "3.1.0"
+info:
+  title: MLX Router API
+  description: >
+    Reverse proxy that routes requests to local MLX model backends
+    (LLM, VLM, TTS, STT, Image Generation).  Each model runs as a
+    separate subprocess on ports 6301+; the router on port 6300
+    extracts the `model` field, injects config defaults, rewrites
+    the alias to the backend source name, applies backend-specific
+    transforms, and proxies to the backend.
+
+    **Request flow:**
+    1. Client sends request to `http://localhost:6300/{path}`
+    2. Router extracts `model` from JSON body, query param, or multipart form field
+    3. Router looks up ModelConfig, starts model if needed (lazy), evicts LRU
+       models when memory budget is exceeded
+    4. Router injects default hyperparams (caller values take precedence),
+       rewrites `model` alias → source name
+    5. Router calls backend-specific `transform_request()` (e.g. renames
+       `thinking_token_budget` → `thinking_budget` for mlx-vlm)
+    6. Router proxies to `http://127.0.0.1:<port>/{path}` and returns response
+
+    **Streaming:**
+    - Chat endpoints use OpenAI SSE format (`data: ...\n\n`)
+    - Image generation endpoints support `?sse=true` for progress events
+  version: 1.0.0
+  x-generated-from:
+    - mlx_server/router.py
+    - mlx_server/backends.py
+    - mlx_server/mflux2_wrapper.py
+    - mlx_server/mflux_wrapper.py
+    - mlx_server/mlx_audio_wrapper.py
+    - mlx_server/mlx_lm_wrapper.py
+    - mlx_server/mlx_vlm_wrapper.py
+    - mlx_server/config.py
+
+servers:
+  - url: http://localhost:6300
+    description: MLX Router (proxies to model backends)
+
+paths:
+  # ──────────────────────────── Router endpoints ────────────────────────────
+
+  /v1/models:
+    get:
+      operationId: listModels
+      summary: List configured models
+      description: >
+        Returns all models from the YAML config.  Works even when
+        backends are offline.  Each entry's `id` is the alias name
+        used in the `model` field of proxied requests.
+      responses:
+        "200":
+          description: Model list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  object:
+                    type: string
+                    example: list
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          description: Model alias (use in `model` field)
+                          example: qwen3.6-27b
+                        object:
+                          type: string
+                          example: model
+                        owned_by:
+                          type: string
+                          example: mlx-community
+
+  /{path}:
+    x-router-catch-all: true
+    description: >
+      **Catch-all proxy.**  Any HTTP method (GET, POST, PUT, DELETE,
+      OPTIONS) to any path is forwarded to the resolved backend.
+      The `model` parameter identifies which backend to route to.
+
+      **Where `model` is extracted:**
+        1. `model` query parameter (GET)
+        2. `model` field in JSON request body (POST/PUT)
+        3. `model` multipart form field (audio transcriptions)
+
+      **Error responses:**
+        - 400: `model` field is missing
+        - 400: image content sent to text-only model
+        - 404: `model` does not match any configured alias
+        - 503: backend failed to start or is unreachable
+
+      **Streaming:**  When the request body contains `"stream": true`,
+      or the query contains `?sse=true`, the response is returned as
+      `text/event-stream`.  The proxy streams bytes verbatim from the
+      backend.
+
+      **Backend URL resolution:**  `http://127.0.0.1:<port>/<path>`
+      where `<port>` is the model's assigned port (auto-allocated
+      from `base_port` in config).
+    parameters:
+      - name: path
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: model
+        in: query
+        required: false
+        schema:
+          type: string
+        description: >
+          Model alias (used for GET requests).  For POST/PUT, use
+          the `model` field in the JSON body instead.
+    responses:
+      "200":
+        description: Backend response (forwarded verbatim)
+      "400":
+        description: Missing model, image content on text-only model, or bad request
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApiError"
+      "404":
+        description: Unknown model alias
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApiError"
+      "503":
+        description: Backend unavailable or failed to start
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApiError"
+
+  # ────────────────────── Chat Completions (LLM / VLM) ──────────────────────
+
+  /v1/chat/completions:
+    post:
+      operationId: createChatCompletion
+      summary: Chat completion (text + vision)
+      description: >
+        OpenAI-compatible chat completions endpoint.  Proxied to
+        either `mlx_lm.server` (mlx-lm backend) or
+        `mlx_vlm.server` (mlx-vlm backend).
+
+        **Image input (VLM only):**  Models with `backend: mlx-vlm`
+        or `multimodal: true` accept image URLs in content blocks:
+
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+
+        Image content sent to a text-only model (accepts_image_input=false)
+        returns 400 before touching the backend.
+
+        **Thinking mode (mlx-vlm):**  Use `thinking_token_budget` to set
+        the token limit for the thinking phase.  The router renames this
+        to `thinking_budget` for the backend.  Incompatible with MTP
+        models (budget is silently stripped).
+
+        **Enable thinking (mlx-lm):**  Use `enable_thinking: true/false`.
+
+        **Streaming:**  Set `"stream": true` for SSE token-by-token output.
+
+        **Default hyperparams:**  Defined per-model in `models.yaml`
+        `defaults:` section.  Caller-supplied values take precedence.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatCompletionRequest"
+      responses:
+        "200":
+          description: Chat completion response (non-streaming)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatCompletionResponse"
+        "400":
+          $ref: "#/components/responses/ApiError"
+        "404":
+          $ref: "#/components/responses/ApiError"
+        "503":
+          $ref: "#/components/responses/ApiError"
+      x-streaming-description: >
+        When `stream: true`, the response is `text/event-stream` with
+        standard OpenAI `data: ...\n\n` events.  Final event is
+        `data: [DONE]\n\n`.
+
+  # ────────────────────────── Text Completions ──────────────────────────────
+
+  /v1/completions:
+    post:
+      operationId: createCompletion
+      summary: Text completion (legacy)
+      description: >
+        OpenAI-compatible text completions endpoint.  Proxied to the
+        model backend.  Supports the same hyperparams as chat
+        completions but uses `prompt: string` instead of `messages`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompletionRequest"
+      responses:
+        "200":
+          description: Completion response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompletionResponse"
+
+  # ──────────────────────────── Audio: TTS ────────────────────────────────
+
+  /v1/audio/speech:
+    post:
+      operationId: createSpeech
+      summary: Text-to-speech
+      description: >
+        Generates audio from text using a TTS model (e.g. Kokoro-82M).
+        Only works with models on the `mlx-audio` backend that have TTS
+        capability (auto-detected via `sample_rate` attribute, or forced
+        with `--type tts` in extra_args).
+
+        Returns binary audio data directly (not wrapped in JSON).
+        Default format is MP3.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SpeechRequest"
+      responses:
+        "200":
+          description: Audio bytes
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+            audio/flac:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/ApiError"
+
+  # ──────────────────────────── Audio: STT ────────────────────────────────
+
+  /v1/audio/transcriptions:
+    post:
+      operationId: createTranscription
+      summary: Speech-to-text
+      description: >
+        Transcribes audio to text using an STT model (e.g. Whisper).
+        Only works with models on the `mlx-audio` backend that have STT
+        capability (no `sample_rate` attribute, or forced with
+        `--type stt` in extra_args).
+
+        Accepts multipart/form-data with the audio file.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Audio file to transcribe
+                model:
+                  type: string
+                  description: Model alias
+                language:
+                  type: string
+                  description: Optional language code
+                response_format:
+                  type: string
+                  default: json
+                  enum: [json, text]
+              required:
+                - file
+                - model
+      responses:
+        "200":
+          description: Transcription text
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  text:
+                    type: string
+            text/plain:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/ApiError"
+
+  # ──────────────────────── Image: Generation (mflux v1) ────────────────────
+
+  /v1/images/generations:
+    post:
+      operationId: createImageGeneration
+      summary: Text-to-image generation
+      description: >
+        Generates images from a text prompt.  Supports two backend
+        implementations:
+
+        **mflux (v1, e.g. FLUX-schnell/dev):**  Synchronous, n>1
+        generates images sequentially in a loop.  No SSE progress.
+
+        **mflux2 (v2, FLUX.2-klein):**  Supports both txt2img and
+        img2img.  When `edit_mode: true` and an `images` array is
+        provided, runs image-to-image (reference image + new prompt).
+        SSE progress streaming via `?sse=true` (see SSE events below).
+
+        **SSE streaming (mflux2, `?sse=true`):**  Each line is
+        `data: <json>\n\n`.  Event types:
+
+        - `{"type":"progress","step":N,"total":N,"percent":N,"eta_seconds":N}`:
+          Sent once per denoising step.
+        - `{"type":"done","created":N,"data":[{"b64_json":"...","revised_prompt":"..."}]}`:
+          Final event with generated image(s).  For n>1, data contains
+          all N images from the tensor-batched generation.
+        - `{"type":"error","message":"..."}`:
+          Error event (generation failed or aborted).
+
+        **Batch mode (mflux2, n>1):**  Generates all images in a single
+        tensor-batched denoising loop.  Progress events reflect shared
+        steps.  Cannot be aborted mid-generation.
+
+        **Image-to-image (mflux2, `edit_mode=true`):**  The first image
+        in `images` is used as reference; `image_strength` (0-1) controls
+        the denoising blend: higher = more faithful to original.
+      x-sse-supported: true
+      parameters:
+        - name: sse
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Enable SSE progress streaming (mflux2 only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImageGenRequest"
+      responses:
+        "200":
+          description: Generated image(s)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImageGenResponse"
+            text/event-stream:
+              description: SSE stream (when ?sse=true)
+              schema:
+                type: string
+                description: >
+                  Each line: `data: <json>\n\n` with events of type
+                  `progress`, `done`, or `error`
+        "400":
+          $ref: "#/components/responses/ApiError"
+        "503":
+          $ref: "#/components/responses/ApiError"
+
+  # ─────────────────────────── Image: Edits (mflux2) ────────────────────────
+
+  /v1/images/edits:
+    post:
+      operationId: createImageEdit
+      summary: Image-to-image edit (mflux2)
+      description: >
+        Alias for `/v1/images/generations` with `edit_mode: true`.
+        Only available on the mflux2 backend (FLUX.2-klein).  Same
+        request/response format as `/v1/images/generations`, but
+        always runs in edit mode.
+
+        Requires `images` array with at least one base64-encoded
+        reference image.
+
+        SSE streaming supported via `?sse=true` (same event format).
+      x-sse-supported: true
+      parameters:
+        - name: sse
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Enable SSE progress streaming
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImageGenRequest"
+      responses:
+        "200":
+          description: Edited image(s)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImageGenResponse"
+            text/event-stream:
+              description: SSE stream (when ?sse=true)
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/ApiError"
+
+  # ────────────────────────── Health (per-backend) ──────────────────────────
+
+  /:
+    get:
+      operationId: healthCheck
+      summary: Backend health check
+      description: >
+        Returns health information for a single backend process.
+        Each model wrapper registers `GET /` via `_wrapper_base.py`.
+        This path is **not** forwarded by the router (it must be
+        accessed directly on the backend's port, e.g. `:6301`).
+      responses:
+        "200":
+          description: Health status (varies by backend)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    properties:
+                      model:
+                        type: string
+                      status:
+                        type: string
+                        example: ok
+                  - type: object
+                    properties:
+                      model:
+                        type: string
+                      status:
+                        type: string
+                        example: ok
+                      type:
+                        type: string
+                        description: "tts or stt (mlx-audio only)"
+                        enum: [tts, stt]
+
+components:
+  schemas:
+    # ─────────────── Error ───────────────
+    ApiError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            message:
+              type: string
+            type:
+              type: string
+              example: invalid_request_error
+            code:
+              type: integer
+              description: HTTP status code (present for backend errors)
+      required:
+        - error
+
+    # ─────────────── Chat / Text ───────────────
+    ChatCompletionRequest:
+      type: object
+      properties:
+        model:
+          type: string
+          description: Model alias (e.g. qwen3.6-27b)
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatMessage"
+        stream:
+          type: boolean
+          default: false
+        temperature:
+          type: number
+          description: >
+            Sampling temperature.  WARNING: Qwen3 models prohibit
+            temperature=0 in thinking mode.  min 0.6 for moe, 0.2 for 27B.
+        top_p:
+          type: number
+        top_k:
+          type: integer
+        min_p:
+          type: number
+        repetition_penalty:
+          type: number
+        repetition_context_size:
+          type: integer
+        max_tokens:
+          type: integer
+        thinking_token_budget:
+          type: integer
+          description: >
+            Token budget for the thinking phase (mlx-vlm / Qwen3).
+            Renamed to `thinking_budget` by the router.  Incompatible
+            with MTP models.
+        enable_thinking:
+          type: boolean
+          description: >
+            Enable/disable thinking mode (mlx-lm / Gemma4).  False is
+            moved into `chat_template_kwargs` by the router.
+        chat_template_kwargs:
+          type: object
+          description: Passed through to the tokenizer for mlx-lm; stripped for mlx-vlm
+        stop:
+          type: array
+          items:
+            type: string
+        frequency_penalty:
+          type: number
+        presence_penalty:
+          type: number
+        seed:
+          type: integer
+        tools:
+          type: array
+          items:
+            $ref: "#/components/schemas/ToolDefinition"
+        tool_choice:
+          oneOf:
+            - type: string
+              enum: [auto, none, required]
+            - type: object
+              properties:
+                type:
+                  type: string
+                function:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+      required:
+        - model
+        - messages
+
+    ChatMessage:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant, tool]
+        content:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                $ref: "#/components/schemas/ContentBlock"
+        tool_calls:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              type:
+                type: string
+              function:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  arguments:
+                    type: string
+        tool_call_id:
+          type: string
+      required:
+        - role
+
+    ContentBlock:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [text, image_url, image]
+        text:
+          type: string
+        image_url:
+          type: object
+          properties:
+            url:
+              type: string
+              description: >
+                Data URI (base64) or URL.  Only for models with
+                `accepts_image_input: true`.
+          required:
+            - url
+
+    ToolDefinition:
+      type: object
+      properties:
+        type:
+          type: string
+          default: function
+        function:
+          type: object
+          properties:
+            name:
+              type: string
+            description:
+              type: string
+            parameters:
+              type: object
+              description: JSON Schema for the function parameters
+
+    ChatCompletionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          example: chat.completion
+        created:
+          type: integer
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              message:
+                $ref: "#/components/schemas/ChatMessage"
+              finish_reason:
+                type: string
+        usage:
+          type: object
+          properties:
+            prompt_tokens:
+              type: integer
+            completion_tokens:
+              type: integer
+            total_tokens:
+              type: integer
+
+    CompletionRequest:
+      type: object
+      properties:
+        model:
+          type: string
+        prompt:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: integer
+        stream:
+          type: boolean
+          default: false
+        temperature:
+          type: number
+        top_p:
+          type: number
+        max_tokens:
+          type: integer
+        stop:
+          type: array
+          items:
+            type: string
+
+    CompletionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          example: text_completion
+        created:
+          type: integer
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              text:
+                type: string
+              index:
+                type: integer
+              finish_reason:
+                type: string
+
+    # ─────────────── Audio ───────────────
+    SpeechRequest:
+      type: object
+      properties:
+        model:
+          type: string
+          description: Model alias (must be a TTS model)
+        input:
+          type: string
+          description: Text to synthesize
+        voice:
+          type: string
+          description: Voice ID (e.g. af_heart for Kokoro)
+        speed:
+          type: number
+          default: 1.0
+        response_format:
+          type: string
+          default: mp3
+          enum: [mp3, wav, flac, pcm]
+        temperature:
+          type: number
+        top_p:
+          type: number
+        top_k:
+          type: integer
+        lang_code:
+          type: string
+          description: Language code (e.g. en-us)
+        instruct:
+          type: string
+          description: Voice instruction/style override
+      required:
+        - model
+        - input
+
+    # ─────────────── Image ───────────────
+    ImageGenRequest:
+      type: object
+      properties:
+        model:
+          type: string
+          description: Model alias
+        prompt:
+          type: string
+          description: Text prompt describing the desired image
+        n:
+          type: integer
+          default: 1
+          description: Number of images to generate
+        size:
+          type: string
+          default: 1024x1024
+          description: Image size (fallback if width/height not set)
+        response_format:
+          type: string
+          default: b64_json
+          enum: [b64_json]
+        images:
+          type: array
+          items:
+            type: string
+          description: >
+            Base64-encoded reference image(s) for img2img (mflux2).
+            First image used as reference.
+        image_strength:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: >
+            Denoising strength for img2img (mflux2).  Higher = more
+            faithful to original.  With 4-step default, only 3
+            distinct levels; use 8-12 steps for finer control.
+        edit_mode:
+          type: boolean
+          description: Enable image-to-image editing mode (mflux2)
+        steps:
+          type: integer
+          default: 4
+          description: Inference steps (config default per model)
+        guidance_scale:
+          type: number
+          description: CFG guidance scale
+        width:
+          type: integer
+          description: Image width (overrides size parsing)
+        height:
+          type: integer
+          description: Image height (overrides size parsing)
+        seed:
+          type: integer
+          description: Random seed (deterministic if set)
+      required:
+        - model
+        - prompt
+
+    ImageGenResponse:
+      type: object
+      properties:
+        created:
+          type: integer
+          description: Unix timestamp
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              b64_json:
+                type: string
+                description: Base64-encoded PNG image
+              revised_prompt:
+                type: string
+                description: Prompt used (may differ from input)
+      required:
+        - created
+        - data
+
+  responses:
+    ApiError:
+      description: Error response
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+
+x-tag-groups:
+  - name: Router
+    description: Core routing and model discovery
+  - name: Chat
+    description: Text and multimodal chat completions
+  - name: Audio
+    description: Speech-to-text and text-to-speech
+  - name: Image
+    description: Image generation and editing

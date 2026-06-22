@@ -129,6 +129,25 @@ For streaming requests, the `httpx.AsyncClient` **must** be opened inside `_stre
 - Evicts LRU (least-recently-used, non-protected, not started in last 60 s) models until memory is within budget
 - Polls the backend port for up to 120 s after starting (accommodates mflux's pre-startup model load)
 
+## API specification — keep in sync
+
+`docs/api/openapi.yaml` is the authoritative API specification.  `docs/api/APISUMMARY.md`
+is the quick-reference for consumer apps (2-3 file read to onboard).
+
+**Any change that adds, removes, or modifies an API endpoint, request schema,
+response schema, SSE event format, or router behaviour MUST also update both
+files.**  This includes:
+
+- Adding a new wrapper with new endpoints
+- Changing request or response fields in any wrapper
+- Adding a new backend or modality
+- Changing router request transforms or error responses
+- Adding/changing SSE event types or formats
+- Adding new config defaults that affect proxied requests
+
+Run a quick sanity check after changes: verify the OpenAPI spec at
+https://editor.swagger.io or with `python3 -c "import yaml; yaml.safe_load(open('docs/api/openapi.yaml'))"`.
+
 ## Known bugs and constraints
 
 **Gemma 4 continuous batching** — `vllm-mlx` 0.4.0rc1's `patch_gemma4_attention_for_batching` doesn't forward the `shared_kv` kwarg from `mlx-vlm` 0.6.2, crashing on any batched request. All Gemma4 models in config have `continuous_batching: false` via their `extra_args`. Do not re-enable until a vllm-mlx upstream fix is confirmed.

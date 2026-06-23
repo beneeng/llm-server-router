@@ -31,6 +31,7 @@ import json
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -72,6 +73,7 @@ class _BatchProgressTqdm(_tqdm_base):
 class ImageGenRequest(BaseModel):
     model: str = ""
     prompt: str
+    negative_prompt: Optional[str] = None
     n: int = 1
     size: str = "1024x1024"
     response_format: str = "b64_json"
@@ -125,6 +127,34 @@ class ProgressCallback:
 
     def call_after_loop(self, seed, prompt, latents, config, **kw):
         self._push(None)  # sentinel — generation done
+
+
+@contextmanager
+def _inject_negative_prompt(neg_prompt: str | None):
+    """Temporarily patch _encode_prompt_pair on the model instance to use neg_prompt.
+
+    mflux hardcodes negative_prompt=" " inside generate_image/generate_images.
+    Patching the bound method on the instance is safe here because generation
+    always runs on the single-threaded MLX executor, so there is no concurrency.
+    """
+    if not neg_prompt or not _model:
+        print(f"[mflux2] _inject_negative_prompt: skipped (neg_prompt={neg_prompt!r}, model={'set' if _model else 'None'})", flush=True)
+        yield
+        return
+    original = _model._encode_prompt_pair
+
+    def _patched(*, prompt, negative_prompt=None, guidance, batch_size=1):
+        effective = neg_prompt if (guidance is not None and guidance > 1.0) else None
+        print(f"[mflux2] _encode_prompt_pair called: guidance={guidance} → neg_prompt={'ACTIVE' if effective else 'IGNORED (guidance≤1)'!r} neg_prompt_value={neg_prompt!r:.80}", flush=True)
+        return original(prompt=prompt, negative_prompt=neg_prompt, guidance=guidance, batch_size=batch_size)
+
+    _model._encode_prompt_pair = _patched
+    print(f"[mflux2] _inject_negative_prompt: patch applied neg_prompt={neg_prompt!r:.80}", flush=True)
+    try:
+        yield
+    finally:
+        _model._encode_prompt_pair = original
+        print("[mflux2] _inject_negative_prompt: patch removed", flush=True)
 
 
 app = FastAPI()
@@ -184,7 +214,14 @@ async def _run_edit_generate(request: ImageGenRequest, http_req: Request) -> JSO
     guidance = request.guidance_scale if request.guidance_scale is not None else 1.0
     base_seed = request.seed if request.seed is not None else int(time.time())
     n_ref = len(request.images) if request.images else 0
-    print(f"edit: prompt={request.prompt!r:.60} ref_images={n_ref}", flush=True)
+    print(
+        f"edit: prompt={request.prompt!r:.80}"
+        f" negative_prompt={request.negative_prompt!r:.80}"
+        f" ref_images={n_ref}"
+        f" steps={request.steps or 4} guidance={request.guidance_scale if request.guidance_scale is not None else 1.0}"
+        f" seed={request.seed}",
+        flush=True,
+    )
 
     tmp_files = _write_tmp_files(request.images)
     loop = asyncio.get_running_loop()
@@ -194,15 +231,16 @@ async def _run_edit_generate(request: ImageGenRequest, http_req: Request) -> JSO
         _ensure_mode("edit")
         _model.callbacks.register(cb)
         try:
-            return _model.generate_image(
-                seed=base_seed,
-                prompt=request.prompt,
-                num_inference_steps=steps,
-                height=height,
-                width=width,
-                guidance=guidance,
-                image_paths=tmp_files if tmp_files else None,
-            )
+            with _inject_negative_prompt(request.negative_prompt):
+                return _model.generate_image(
+                    seed=base_seed,
+                    prompt=request.prompt,
+                    num_inference_steps=steps,
+                    height=height,
+                    width=width,
+                    guidance=guidance,
+                    image_paths=tmp_files if tmp_files else None,
+                )
         except GenerationAborted:
             return None
         finally:
@@ -240,7 +278,17 @@ async def _run_generate(request: ImageGenRequest, http_req: Request) -> JSONResp
         return await _run_edit_generate(request, http_req)
 
     n_ref = len(request.images) if request.images else 0
-    print(f"generate: prompt={request.prompt!r:.60} n={request.n} ref_images={n_ref}", flush=True)
+    width_r, height_r = _resolve_dims(request)
+    steps_r = request.steps or 4
+    guidance_r = request.guidance_scale if request.guidance_scale is not None else 1.0
+    print(
+        f"generate: prompt={request.prompt!r:.80}"
+        f" negative_prompt={request.negative_prompt!r:.80}"
+        f" n={request.n} ref_images={n_ref}"
+        f" steps={steps_r} guidance={guidance_r}"
+        f" size={width_r}x{height_r} seed={request.seed}",
+        flush=True,
+    )
 
     width, height = _resolve_dims(request)
     steps = request.steps or 4
@@ -259,16 +307,17 @@ async def _run_generate(request: ImageGenRequest, http_req: Request) -> JSONResp
             _ensure_mode("txt2img")
             try:
                 seeds = [base_seed + i for i in range(request.n)]
-                return _model.generate_images(
-                    seeds=seeds,
-                    prompt=request.prompt,
-                    num_inference_steps=steps,
-                    height=height,
-                    width=width,
-                    guidance=guidance,
-                    image_path=image_path,
-                    image_strength=request.image_strength,
-                )
+                with _inject_negative_prompt(request.negative_prompt):
+                    return _model.generate_images(
+                        seeds=seeds,
+                        prompt=request.prompt,
+                        num_inference_steps=steps,
+                        height=height,
+                        width=width,
+                        guidance=guidance,
+                        image_path=image_path,
+                        image_strength=request.image_strength,
+                    )
             finally:
                 _cleanup(tmp_files)
 
@@ -305,16 +354,17 @@ async def _run_generate(request: ImageGenRequest, http_req: Request) -> JSONResp
             _ensure_mode("txt2img")
             _model.callbacks.register(cb)
             try:
-                return _model.generate_image(
-                    seed=base_seed,
-                    prompt=request.prompt,
-                    num_inference_steps=steps,
-                    height=height,
-                    width=width,
-                    guidance=guidance,
-                    image_path=image_path,
-                    image_strength=request.image_strength,
-                )
+                with _inject_negative_prompt(request.negative_prompt):
+                    return _model.generate_image(
+                        seed=base_seed,
+                        prompt=request.prompt,
+                        num_inference_steps=steps,
+                        height=height,
+                        width=width,
+                        guidance=guidance,
+                        image_path=image_path,
+                        image_strength=request.image_strength,
+                    )
             except GenerationAborted:
                 return None
             finally:
@@ -388,16 +438,17 @@ async def _run_generate_sse(request: ImageGenRequest, http_req: Request) -> Stre
             _tqdm_local.push_fn = _push_batch_progress
             try:
                 _ensure_mode("txt2img")
-                return _model.generate_images(
-                    seeds=seeds,
-                    prompt=request.prompt,
-                    num_inference_steps=steps,
-                    height=height,
-                    width=width,
-                    guidance=guidance,
-                    image_path=image_path,
-                    image_strength=request.image_strength,
-                )
+                with _inject_negative_prompt(request.negative_prompt):
+                    return _model.generate_images(
+                        seeds=seeds,
+                        prompt=request.prompt,
+                        num_inference_steps=steps,
+                        height=height,
+                        width=width,
+                        guidance=guidance,
+                        image_path=image_path,
+                        image_strength=request.image_strength,
+                    )
             except Exception:
                 return None
             finally:
@@ -448,27 +499,28 @@ async def _run_generate_sse(request: ImageGenRequest, http_req: Request) -> Stre
         _ensure_mode("edit" if use_edit else "txt2img")
         _model.callbacks.register(cb)
         try:
-            if use_edit:
-                return _model.generate_image(
-                    seed=base_seed,
-                    prompt=request.prompt,
-                    num_inference_steps=steps,
-                    height=height,
-                    width=width,
-                    guidance=guidance,
-                    image_paths=tmp_files if tmp_files else None,
-                )
-            else:
-                return _model.generate_image(
-                    seed=base_seed,
-                    prompt=request.prompt,
-                    num_inference_steps=steps,
-                    height=height,
-                    width=width,
-                    guidance=guidance,
-                    image_path=tmp_files[0] if tmp_files else None,
-                    image_strength=request.image_strength,
-                )
+            with _inject_negative_prompt(request.negative_prompt):
+                if use_edit:
+                    return _model.generate_image(
+                        seed=base_seed,
+                        prompt=request.prompt,
+                        num_inference_steps=steps,
+                        height=height,
+                        width=width,
+                        guidance=guidance,
+                        image_paths=tmp_files if tmp_files else None,
+                    )
+                else:
+                    return _model.generate_image(
+                        seed=base_seed,
+                        prompt=request.prompt,
+                        num_inference_steps=steps,
+                        height=height,
+                        width=width,
+                        guidance=guidance,
+                        image_path=tmp_files[0] if tmp_files else None,
+                        image_strength=request.image_strength,
+                    )
         except GenerationAborted:
             return None
         finally:

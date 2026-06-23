@@ -170,6 +170,24 @@ class Mflux2(Backend):
     modalities = frozenset({"image"})
 
 
+class MfluxIdeogram(Backend):
+    """Ideogram 4 image generation via mflux (isolated image venv).
+
+    Text-to-image only (no img2img). Supports three quality presets:
+    - V4_TURBO_12  — 12 steps, variable guidance schedule
+    - V4_DEFAULT_20 — 20 steps, variable guidance schedule (default)
+    - V4_QUALITY_48 — 48 steps, variable guidance schedule
+    steps=12/20/48 in model defaults auto-maps to the matching preset schedule.
+    Supports LoRA via --lora-paths and pre-quantized models via --model-path.
+    """
+
+    name = "mflux-ideogram"
+    env = "image"
+    packages = ("mflux", "fastapi", "uvicorn[standard]", "pydantic")
+    wrapper = "mflux_ideogram_wrapper.py"
+    modalities = frozenset({"image"})
+
+
 BACKENDS: dict[str, Backend] = {
-    b.name: b for b in (MlxLm(), MlxVlm(), MlxAudio(), Mflux(), Mflux2())
+    b.name: b for b in (MlxLm(), MlxVlm(), MlxAudio(), Mflux(), Mflux2(), MfluxIdeogram())
 }

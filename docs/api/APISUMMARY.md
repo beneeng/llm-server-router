@@ -61,7 +61,7 @@ curl -X POST http://localhost:6300/v1/images/generations \
   | python3 -c "import sys,json,base64; open('out.png','wb').write(base64.b64decode(json.load(sys.stdin)['data'][0]['b64_json']))"
 ```
 
-### SSE streaming (mflux2 only — append `?sse=true`)
+### SSE streaming (mflux2 + mflux-ideogram — append `?sse=true`)
 
 ```bash
 curl -X POST "http://localhost:6300/v1/images/generations?sse=true" \
@@ -71,13 +71,32 @@ curl -X POST "http://localhost:6300/v1/images/generations?sse=true" \
 
 SSE events (each line: `data: <json>\n\n`):
 
-| Event | Format |
-|-------|--------|
-| progress | `{"type":"progress","step":N,"total":N,"percent":N,"eta_seconds":N}` |
-| done | `{"type":"done","created":N,"data":[{"b64_json":"...","revised_prompt":"..."}]}` |
-| error | `{"type":"error","message":"..."}` |
+| Event | Format | Backends |
+|-------|--------|---------|
+| progress | `{"type":"progress","step":N,"total":N,"percent":N,"eta_seconds":N}` | mflux2 only |
+| done | `{"type":"done","created":N,"data":[{"b64_json":"...","revised_prompt":"..."}]}` | all |
+| error | `{"type":"error","message":"..."}` | all |
 
-### Image-to-image editing (mflux2)
+Note: mflux-ideogram emits only `done`/`error` (no per-step `progress` — Ideogram 4 has no step callbacks).
+
+### Ideogram 4 (mflux-ideogram backend)
+
+```bash
+curl -X POST http://localhost:6300/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{"model":"ideogram-4","prompt":"a photorealistic red cat on a rooftop at sunset"}'
+  | python3 -c "import sys,json,base64; open('out.png','wb').write(base64.b64decode(json.load(sys.stdin)['data'][0]['b64_json']))"
+```
+
+| Parameter | Notes |
+|-----------|-------|
+| `preset` | `V4_TURBO_12` / `V4_DEFAULT_20` (default) / `V4_QUALITY_48` — takes precedence over `steps` |
+| `steps` | 12/20/48 auto-map to the matching preset schedule; other values use flat guidance=7.0 |
+| `negative_prompt` | Ignored (not supported by Ideogram 4 API) |
+
+No img2img or edit support. Batch (`n>1`) generates images sequentially.
+
+### Image-to-image editing (mflux2 only)
 
 ```bash
 curl -X POST http://localhost:6300/v1/images/edits \
@@ -87,7 +106,7 @@ curl -X POST http://localhost:6300/v1/images/edits \
 
 `/v1/images/edits` is an alias for `/v1/images/generations` with `edit_mode=true`.
 
-## Batch mode (mflux2, n>1)
+## Batch mode (mflux2: tensor-batched; mflux-ideogram: sequential)
 
 ```bash
 curl -X POST http://localhost:6300/v1/images/generations \

@@ -751,6 +751,11 @@ components:
         prompt:
           type: string
           description: Text prompt describing the desired image
+        negative_prompt:
+          type: string
+          description: >
+            Negative prompt (mflux2 only — ignored by mflux-ideogram).
+            Only active when guidance_scale > 1.0.
         n:
           type: integer
           default: 1
@@ -768,23 +773,25 @@ components:
           items:
             type: string
           description: >
-            Base64-encoded reference image(s) for img2img (mflux2).
+            Base64-encoded reference image(s) for img2img (mflux2 only).
             First image used as reference.
         image_strength:
           type: number
           minimum: 0
           maximum: 1
           description: >
-            Denoising strength for img2img (mflux2).  Higher = more
+            Denoising strength for img2img (mflux2 only).  Higher = more
             faithful to original.  With 4-step default, only 3
             distinct levels; use 8-12 steps for finer control.
         edit_mode:
           type: boolean
-          description: Enable image-to-image editing mode (mflux2)
+          description: Enable image-to-image editing mode (mflux2 only)
         steps:
           type: integer
-          default: 4
-          description: Inference steps (config default per model)
+          description: >
+            Inference steps (config default per model).
+            For mflux-ideogram: 12/20/48 auto-map to the matching preset's
+            variable guidance schedule; other values use flat guidance=7.0.
         guidance_scale:
           type: number
           description: CFG guidance scale
@@ -797,6 +804,13 @@ components:
         seed:
           type: integer
           description: Random seed (deterministic if set)
+        preset:
+          type: string
+          enum: [V4_TURBO_12, V4_DEFAULT_20, V4_QUALITY_48]
+          description: >
+            Ideogram 4 quality preset (mflux-ideogram only). Takes precedence
+            over steps. Uses the preset's variable guidance schedule for best
+            quality. V4_DEFAULT_20 is used when neither preset nor steps is set.
       required:
         - model
         - prompt

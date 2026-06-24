@@ -191,6 +191,39 @@ The package lists come from each `Backend` in `mlx_server/backends.py`. The wrap
 
 No changes to the router, manager, CLI install, or config dispatch are needed.
 
+## Model caching with `mflux-save` (image models only)
+
+By default, mflux image models re-process weights from disk on every startup:
+
+- **FLUX.2-klein** (mflux2): weights are already in MLX-native format, but `--quantize 8` re-applies int8 group quantization from scratch on every start — not cached.
+- **Ideogram 4** (mflux-ideogram): heavier — weights are in FP8 format requiring a custom binary reader, plus optional re-quantization. Both steps repeat every start.
+- **Text/VLM models** (mlx-lm, mlx-vlm): not affected — mlx-community repos ship pre-quantized MLX-native weights and load with a plain `mx.load()`.
+
+`mflux-save` writes a processed version to disk with `mflux_version` metadata. On subsequent starts mflux detects this and skips all transforms, going straight to `mx.load()`. The benefit is faster cold-start (seconds vs. up to a minute); inference speed is unchanged.
+
+```bash
+# flux2-klein-fast (no LoRA)
+~/.local/share/mlx/venvs/image/bin/mflux-save \
+  --model flux2-klein-4b --quantize 8 \
+  --path ~/.local/share/mlx/models/flux2-klein-4b-q8
+
+# flux2-klein-hifi (LoRA baked in — scale is frozen, can't be adjusted without re-saving)
+~/.local/share/mlx/venvs/image/bin/mflux-save \
+  --model flux2-klein-9b --quantize 8 \
+  --lora-paths ~/.local/share/mlx/loras/ultra-real-klein-v4.safetensors \
+  --lora-scales 0.8 \
+  --path ~/.local/share/mlx/models/flux2-klein-9b-hifi-q8
+
+# ideogram-4
+~/.local/share/mlx/venvs/image/bin/mflux-save \
+  --model ideogram4 --quantize 8 \
+  --path ~/.local/share/mlx/models/ideogram-4-q8
+```
+
+Then in `~/.config/mlx/models.yaml`, add `"--model-path", "<path>"` to `extra_args` and remove `--quantize` (already baked). For LoRA models, also remove `--lora-paths`/`--lora-scales`.
+
+**LoRA trade-off:** `mflux-save --lora-paths` permanently fuses the adapter into the weights. Good when scale is finalized; if still tuning, keep the un-saved form so you can change scales without re-saving.
+
 ## Caveats
 
 ### Gemma 4 repetition collapse

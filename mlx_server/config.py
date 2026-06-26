@@ -124,6 +124,21 @@ class ServerConfig(BaseModel):
         return next((m for m in self.models if m.name == name), None)
 
 
+def parse_listen_address(address: str) -> tuple[str, int | None]:
+    """Parse 'host:port' or 'host' into (host, optional_port).
+
+    Examples:
+        "0.0.0.0:6300"  → ("0.0.0.0", 6300)
+        "0.0.0.0"       → ("0.0.0.0", None)
+        "127.0.0.1"     → ("127.0.0.1", None)
+    """
+    if ":" in address:
+        parts = address.rsplit(":", 1)
+        if parts[1].isdigit():
+            return parts[0], int(parts[1])
+    return address, None
+
+
 def load_config(path: Path = CONFIG_PATH) -> ServerConfig:
     if not path.exists():
         raise FileNotFoundError(

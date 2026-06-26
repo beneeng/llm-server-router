@@ -22,7 +22,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .backends import BACKENDS
-from .config import load_config
+from .config import load_config, parse_listen_address
 from .manager import (
     ROUTER_NAME,
     ProcessStatus,
@@ -63,9 +63,16 @@ def start(
     model: Optional[str] = typer.Option(None, "--model", "-m", help="Start only this model"),
     router: bool = typer.Option(False, "--router", help="Start only the router"),
     wait: bool = typer.Option(True, "--wait/--no-wait", help="Wait for ports to be ready"),
+    listen: Optional[str] = typer.Option(None, "--listen", "-l",
+        help="Bind to host[:port], e.g. 0.0.0.0 or 127.0.0.1:6300"),
 ) -> None:
     """Start model servers and the router."""
     cfg = load_config()
+    if listen:
+        host, port = parse_listen_address(listen)
+        cfg.host = host
+        if port is not None:
+            cfg.port = port
 
     if router:
         pid = start_router(cfg)

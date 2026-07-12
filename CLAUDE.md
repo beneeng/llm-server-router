@@ -124,6 +124,14 @@ For streaming requests, the `httpx.AsyncClient` **must** be opened inside `_stre
 - `VENV_DIR = ~/.local/share/mlx/venvs/`
 - Stop sequence: SIGTERM → 5s poll → SIGKILL
 
+**Keep-awake (`mlx_server/keepawake.py`):** every proxied request (and every
+streamed chunk) calls `touch()`, which holds a `caffeinate -d -i` assertion
+for `GRACE_SECONDS` (90s) past the last activity, then releases it. Prevents
+macOS's idle-timer-driven screen lock during/just-after remote/agent
+sessions — a locked screen has been triggering a fan-control bug that
+overheats the M-series core mid-generation (force-shutdown required). Does
+not override an explicit lock or lid-close sleep.
+
 **Memory management (`mlx_server/memory.py`):**
 - `MemoryManager.ensure_model_ready(name)` is called on every proxied request
 - Evicts LRU (least-recently-used, non-protected, not started in last 60 s) models until memory is within budget

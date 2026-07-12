@@ -43,6 +43,7 @@ def _backend_unavailable(model_name: str, port: int) -> JSONResponse:
     )
 
 from .config import ServerConfig, load_config
+from .keepawake import touch as _touch_keepawake
 from .memory import MemoryManager
 
 # Loaded once at startup; re-read the file on SIGHUP if you want hot reload.
@@ -89,6 +90,7 @@ async def list_models() -> JSONResponse:
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
 async def proxy(path: str, request: Request) -> Response:
+    _touch_keepawake()
     cfg = _config()
 
     # --- determine which model is requested ---
@@ -218,6 +220,7 @@ async def proxy(path: str, request: Request) -> Response:
                             yield f"data: {err}\n\ndata: [DONE]\n\n".encode()
                             return
                         async for chunk in resp.aiter_bytes():
+                            _touch_keepawake()
                             yield chunk
                 except httpx.ConnectError:
                     err = json.dumps({"error": {"message": f"Backend for '{model_name}' died mid-stream", "type": "service_unavailable"}})

@@ -111,6 +111,11 @@ class ServerConfig(BaseModel):
     # below this after loading. Backstop against swap/OOM when cap alone is not
     # enough (e.g. KV-cache spikes during the first inference pass).
     min_free_memory_gb: float = 8.0
+    # Before force-killing an in-flight (busy) LRU victim during eviction, wait
+    # up to this long for it to finish its current request(s). If it doesn't
+    # finish in time, it is force-stopped anyway so memory pressure can't
+    # deadlock the system indefinitely.
+    evict_wait_timeout_seconds: float = 300.0
     models: list[ModelConfig] = []
 
     @model_validator(mode="after")

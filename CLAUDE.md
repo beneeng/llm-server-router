@@ -135,6 +135,7 @@ not override an explicit lock or lid-close sleep.
 **Memory management (`mlx_server/memory.py`):**
 - `MemoryManager.ensure_model_ready(name)` is called on every proxied request
 - Evicts LRU (least-recently-used, non-protected, not started in last 60 s) models until memory is within budget
+- Graceful eviction: the router calls `mark_busy`/`mark_idle` around each proxied request (including for the duration of a streaming response). An LRU victim that's currently busy is not killed immediately — eviction releases `MemoryManager._lock` and waits on that model's idle `asyncio.Event` for up to `ServerConfig.evict_wait_timeout_seconds` (default 300 s), then force-stops it anyway if it still hasn't gone idle. Idle candidates are always preferred over busy ones.
 - Polls the backend port for up to 120 s after starting (accommodates mflux's pre-startup model load)
 
 ## API specification — keep in sync

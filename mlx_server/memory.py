@@ -66,6 +66,8 @@ class MemoryManager:
         self._lru: OrderedDict[str, float] = OrderedDict()
         self._started_at: dict[str, float] = {}
         self._lock = asyncio.Lock()
+        self._inflight: dict[str, int] = {}
+        self._idle_events: dict[str, asyncio.Event] = {}
 
     async def ensure_model_ready(self, model_name: str) -> None:
         async with self._lock:
@@ -105,6 +107,26 @@ class MemoryManager:
     def _touch(self, name: str) -> None:
         self._lru[name] = time.monotonic()
         self._lru.move_to_end(name)
+
+    def _idle_event(self, name: str) -> asyncio.Event:
+        ev = self._idle_events.get(name)
+        if ev is None:
+            ev = asyncio.Event()
+            ev.set()  # idle by default
+            self._idle_events[name] = ev
+        return ev
+
+    def mark_busy(self, name: str) -> None:
+        """Record that a request is now being handled by `name`'s backend."""
+        self._inflight[name] = self._inflight.get(name, 0) + 1
+        self._idle_event(name).clear()
+
+    def mark_idle(self, name: str) -> None:
+        """Record that a request handled by `name`'s backend has finished."""
+        n = max(self._inflight.get(name, 0) - 1, 0)
+        self._inflight[name] = n
+        if n == 0:
+            self._idle_event(name).set()
 
     async def _ensure_running(self, name: str) -> None:
         pids = _load_pids()
@@ -152,14 +174,52 @@ class MemoryManager:
 
             victim = self._pick_lru_victim(requesting_model)
             if victim is None:
-                log.warning(
-                    "Memory pressure (%.1f GB used + %.1f GB projected, %.1f GB free) "
-                    "but no evictable model found",
-                    total_gb,
-                    projected_additional_gb,
-                    available_gb,
+                # No idle candidate — fall back to the LRU busy one and wait for
+                # it to finish its in-flight request(s) before killing it.
+                victim = self._pick_lru_victim(requesting_model, busy_ok=True)
+                if victim is None:
+                    log.warning(
+                        "Memory pressure (%.1f GB used + %.1f GB projected, %.1f GB free) "
+                        "but no evictable model found",
+                        total_gb,
+                        projected_additional_gb,
+                        available_gb,
+                    )
+                    break
+
+                log.info(
+                    "Waiting for '%s' to finish in-flight request(s) before evicting "
+                    "(up to %.0fs)",
+                    victim,
+                    self._cfg.evict_wait_timeout_seconds,
                 )
-                break
+                idle_event = self._idle_event(victim)
+                # Release the lock while waiting so unrelated requests (including
+                # ones for already-running models) aren't blocked for the duration.
+                self._lock.release()
+                timed_out = False
+                try:
+                    await asyncio.wait_for(
+                        idle_event.wait(), timeout=self._cfg.evict_wait_timeout_seconds
+                    )
+                except asyncio.TimeoutError:
+                    timed_out = True
+                    log.warning(
+                        "Timed out waiting for '%s' to go idle; force-stopping anyway",
+                        victim,
+                    )
+                finally:
+                    await self._lock.acquire()
+
+                if not timed_out:
+                    # It went idle — but state may have changed (a new request
+                    # could have grabbed it again, another model may now be a
+                    # better candidate, or pressure may already be resolved).
+                    # Re-evaluate from scratch rather than assuming `victim`
+                    # is still the right (or even still evictable) choice.
+                    continue
+                # Timed out: fall through and force-stop `victim` below, exactly
+                # like the immediate-idle-victim path.
 
             log.info(
                 "Evicting '%s' (LRU) — used=%.1f GB projected=%.1f GB free=%.1f GB cap=%s",
@@ -172,8 +232,10 @@ class MemoryManager:
             await loop.run_in_executor(None, stop_process, victim)
             self._lru.pop(victim, None)
             self._started_at.pop(victim, None)
+            self._inflight.pop(victim, None)
+            self._idle_events.pop(victim, None)
 
-    def _pick_lru_victim(self, skip: str) -> str | None:
+    def _pick_lru_victim(self, skip: str, busy_ok: bool = False) -> str | None:
         pids = _load_pids()
         now = time.monotonic()
         for name in self._lru:  # leftmost = least recently used
@@ -183,6 +245,8 @@ class MemoryManager:
             if model_cfg is None or model_cfg.protected:
                 continue
             if now - self._started_at.get(name, 0) < _STARTUP_GRACE_SECONDS:
+                continue
+            if not busy_ok and self._inflight.get(name, 0) > 0:
                 continue
             pid = pids.get(name)
             if pid and _is_alive(pid):

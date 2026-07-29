@@ -187,6 +187,19 @@ async def proxy(path: str, request: Request) -> Response:
     is_stream = body.get("stream", False) or request.query_params.get("sse") == "true"
     fwd_params = {k: v for k, v in request.query_params.items() if k != "model"}
 
+    # Mark the model busy for the duration of the actual backend call, so the
+    # eviction logic in MemoryManager can wait for it to finish instead of
+    # killing it mid-request. Guard against a double decrement across the
+    # early-return / exception / streaming-generator exit paths below.
+    _memory_manager().mark_busy(model_name)
+    marked_idle = False
+
+    def _mark_idle_once() -> None:
+        nonlocal marked_idle
+        if not marked_idle:
+            marked_idle = True
+            _memory_manager().mark_idle(model_name)
+
     if is_stream:
         # Pre-flight: a downed backend must return a real HTTP 503 rather than
         # yielding raw JSON through the SSE stream.  Clients like Pi see a
@@ -195,36 +208,40 @@ async def proxy(path: str, request: Request) -> Response:
             async with httpx.AsyncClient(timeout=httpx.Timeout(2.0)) as probe:
                 await probe.head(backend)
         except (httpx.ConnectError, httpx.TimeoutException):
+            _mark_idle_once()
             return _backend_unavailable(model_name, model_cfg.port)
 
         # Client must live inside the generator — it would be closed by the time
         # Starlette starts iterating if we opened it in the outer scope.
         async def _stream_gen() -> AsyncGenerator[bytes, None]:
-            async with httpx.AsyncClient(timeout=None) as client:
-                try:
-                    async with client.stream(
-                        request.method, url,
-                        content=body_bytes, headers=headers, params=fwd_params,
-                    ) as resp:
-                        if resp.status_code >= 400:
-                            # Backend returned an error (e.g. 404 from mlx_lm.server
-                            # when it rejects a request). Emit a proper SSE error so
-                            # the client sees it rather than "Stream ended without
-                            # finish_reason".
-                            raw = await resp.aread()
-                            try:
-                                detail = json.loads(raw).get("error", raw.decode())
-                            except Exception:
-                                detail = raw.decode()
-                            err = json.dumps({"error": {"message": str(detail), "type": "backend_error", "code": resp.status_code}})
-                            yield f"data: {err}\n\ndata: [DONE]\n\n".encode()
-                            return
-                        async for chunk in resp.aiter_bytes():
-                            _touch_keepawake()
-                            yield chunk
-                except httpx.ConnectError:
-                    err = json.dumps({"error": {"message": f"Backend for '{model_name}' died mid-stream", "type": "service_unavailable"}})
-                    yield f"data: {err}\n\ndata: [DONE]\n\n".encode()
+            try:
+                async with httpx.AsyncClient(timeout=None) as client:
+                    try:
+                        async with client.stream(
+                            request.method, url,
+                            content=body_bytes, headers=headers, params=fwd_params,
+                        ) as resp:
+                            if resp.status_code >= 400:
+                                # Backend returned an error (e.g. 404 from mlx_lm.server
+                                # when it rejects a request). Emit a proper SSE error so
+                                # the client sees it rather than "Stream ended without
+                                # finish_reason".
+                                raw = await resp.aread()
+                                try:
+                                    detail = json.loads(raw).get("error", raw.decode())
+                                except Exception:
+                                    detail = raw.decode()
+                                err = json.dumps({"error": {"message": str(detail), "type": "backend_error", "code": resp.status_code}})
+                                yield f"data: {err}\n\ndata: [DONE]\n\n".encode()
+                                return
+                            async for chunk in resp.aiter_bytes():
+                                _touch_keepawake()
+                                yield chunk
+                    except httpx.ConnectError:
+                        err = json.dumps({"error": {"message": f"Backend for '{model_name}' died mid-stream", "type": "service_unavailable"}})
+                        yield f"data: {err}\n\ndata: [DONE]\n\n".encode()
+            finally:
+                _mark_idle_once()
 
         return StreamingResponse(_stream_gen(), media_type="text/event-stream")
     else:
@@ -241,3 +258,5 @@ async def proxy(path: str, request: Request) -> Response:
             )
         except (httpx.ConnectError, httpx.TimeoutException):
             return _backend_unavailable(model_name, model_cfg.port)
+        finally:
+            _mark_idle_once()

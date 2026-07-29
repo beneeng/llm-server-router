@@ -13,7 +13,9 @@ info:
     1. Client sends request to `http://localhost:6300/{path}`
     2. Router extracts `model` from JSON body, query param, or multipart form field
     3. Router looks up ModelConfig, starts model if needed (lazy), evicts LRU
-       models when memory budget is exceeded
+       models when memory budget is exceeded. An LRU model currently handling
+       a request is not killed immediately — eviction waits for it to finish
+       (up to `evict_wait_timeout_seconds`, default 300s) before force-stopping it
     4. Router injects default hyperparams (caller values take precedence),
        rewrites `model` alias → source name
     5. Router calls backend-specific `transform_request()` (e.g. renames

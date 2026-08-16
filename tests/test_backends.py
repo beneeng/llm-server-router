@@ -18,7 +18,9 @@ from mlx_server.config import ModelConfig
 # ── registry ────────────────────────────────────────────────────────────────
 
 def test_registry_keys():
-    assert set(BACKENDS) == {"mlx-lm", "mlx-vlm", "mlx-audio", "mflux"}
+    assert set(BACKENDS) == {
+        "mlx-lm", "mlx-vlm", "mlx-audio", "mflux", "mflux2", "mflux-ideogram",
+    }
 
 
 def test_envs_and_packages():
@@ -90,6 +92,22 @@ def test_extra_args_appended_last():
 
 
 # ── request transforms ────────────────────────────────────────────────────────
+
+# ── env vars (APC) ────────────────────────────────────────────────────────────
+
+def test_env_vars_default_empty():
+    m = ModelConfig(name="m", source="s", backend="mlx-lm")
+    assert m.resolve_backend().env_vars(m) == {}
+    for name in ("mlx-audio", "mflux"):
+        assert BACKENDS[name].env_vars(m) == {}
+
+
+def test_mlx_vlm_env_vars_enable_apc():
+    m = ModelConfig(name="qwen3.6-27b", source="s", backend="mlx-vlm")
+    env = m.resolve_backend().env_vars(m)
+    assert env["APC_ENABLED"] == "1"
+    assert env["APC_DISK_PATH"].endswith("apc/qwen3.6-27b")
+
 
 def test_mlx_vlm_transform_renames_thinking_budget():
     m = ModelConfig(name="m", source="s", backend="mlx-vlm")

@@ -55,6 +55,10 @@ class Backend:
         """Per-model CLI flags appended after --host (before model.extra_args)."""
         return []
 
+    def env_vars(self, model: "ModelConfig") -> dict[str, str]:
+        """Per-model env vars merged into the subprocess environment."""
+        return {}
+
     def build_args(self, model: "ModelConfig", port: int) -> list[str]:
         wrapper = str(Path(__file__).parent / self.wrapper)
         return [
@@ -117,6 +121,18 @@ class MlxVlm(Backend):
         if model.thinking:
             flags.append("--enable-thinking")
         return flags
+
+    def env_vars(self, model: "ModelConfig") -> dict[str, str]:
+        # Automatic Prefix Caching (mlx-vlm >=0.5): hash-based, block-level KV
+        # reuse across requests with LRU+refcount eviction. APC_DISK_PATH adds
+        # an SSD tier so a warm cache survives this model's process being
+        # stopped/evicted, not just concurrent requests within one run.
+        from .manager import STATE_DIR
+
+        return {
+            "APC_ENABLED": "1",
+            "APC_DISK_PATH": str(STATE_DIR / "apc" / model.name),
+        }
 
     def transform_request(self, body: dict, model: "ModelConfig") -> None:
         # mlx_vlm.server understands enable_thinking and thinking_budget natively.

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import atexit
 import logging
+import os
 import subprocess
 import threading
 import time
@@ -47,7 +48,11 @@ def _start_assertion() -> None:
     if _proc is not None and _proc.poll() is None:
         return
     try:
-        _proc = subprocess.Popen(["caffeinate", "-d", "-i"])
+        # -w <pid>: caffeinate exits on its own once this process is gone, for
+        # any reason (clean exit, crash, SIGKILL). Without it, a hard kill of
+        # the router (e.g. manager.py's SIGTERM->SIGKILL escalation) skips
+        # atexit and orphans caffeinate, which then asserts forever.
+        _proc = subprocess.Popen(["caffeinate", "-d", "-i", "-w", str(os.getpid())])
         logger.info("keepawake: caffeinate started (pid %d)", _proc.pid)
     except FileNotFoundError:
         logger.warning("keepawake: `caffeinate` binary not found; skipping")

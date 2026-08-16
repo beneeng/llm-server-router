@@ -34,6 +34,7 @@ def _bin(name: str) -> str:
 
 STATE_DIR = Path("~/.local/share/mlx").expanduser()
 VENV_DIR = STATE_DIR / "venvs"
+APC_DIR = STATE_DIR / "apc"
 
 
 def _backend_python(env: str) -> str:
@@ -108,6 +109,7 @@ class ProcessStatus:
 def _ensure_dirs() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+    APC_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _load_pids() -> dict[str, int]:
@@ -163,6 +165,7 @@ def start_model(model: ModelConfig) -> int:
         ensure_backend_env(model.resolve_backend(), log_fh=fh)
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
+        env.update(model.resolve_backend().env_vars(model))
         proc = subprocess.Popen(
             model.server_args(),
             stdin=subprocess.DEVNULL,

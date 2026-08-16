@@ -5,10 +5,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Install / reinstall
 
 ```bash
-uv tool install -e . --python 3.12 --prerelease allow
+uv tool install -e . --python 3.12
 ```
 
-This installs the `mlx` CLI globally into a uv-managed venv at `~/.local/share/uv/tools/mlx-server/`. The `--prerelease allow` flag is required because `vllm-mlx` is at 0.4.0rc1.
+This installs the `mlx` CLI globally into a uv-managed venv at `~/.local/share/uv/tools/mlx-server/`. `--prerelease allow` is no longer required (dropped as of the mlx-vlm 0.6.13 upgrade — re-check with `uv lock --dry-run` after future dependency bumps in case a transitive dep goes prerelease-only again).
+
+**This project also has a local `.venv/` (created by `uv sync`, tracking the same `uv.lock`) and a `.envrc` that activates it.** If direnv is active, `.venv/bin` is prepended to `PATH` ahead of the `uv tool install` shim at `~/.local/bin/mlx` — so inside this directory, `mlx` actually resolves to `.venv/bin/mlx`, not the globally tool-installed one. **Both must be kept in sync**: after bumping deps, run both `uv tool install -e . --python 3.12 --reinstall` (for shells without direnv / outside this directory) and `uv sync` (for the local `.venv` direnv picks up). Check `which mlx` if version drift is suspected.
 
 One-time config setup:
 ```bash
@@ -86,6 +88,8 @@ Models reference a backend by name (`backend:` in models.yaml). To add a modalit
 | `mlx-vlm` | `mlx_vlm_wrapper.py` | `main` (tool venv) |
 | `mlx-audio` | `mlx_audio_wrapper.py` | `audio` → `~/.local/share/mlx/venvs/audio/` |
 | `mflux` | `mflux_wrapper.py` | `image` → `~/.local/share/mlx/venvs/image/` |
+| `mflux2` | `mflux2_wrapper.py` | `image` → `~/.local/share/mlx/venvs/image/` |
+| `mflux-ideogram` | `mflux_ideogram_wrapper.py` | `image` → `~/.local/share/mlx/venvs/image/` |
 
 Text wrappers (`mlx-lm`/`mlx-vlm`) monkeypatch + delegate to the upstream
 `mlx_lm.server` / `mlx_vlm.server`. Self-hosted wrappers (`mlx-audio`/`mflux`,
@@ -157,9 +161,33 @@ files.**  This includes:
 Run a quick sanity check after changes: verify the OpenAPI spec at
 https://editor.swagger.io or with `python3 -c "import yaml; yaml.safe_load(open('docs/api/openapi.yaml'))"`.
 
-## Known bugs and constraints
+## KV caching (mlx-vlm Automatic Prefix Caching)
 
-**Gemma 4 continuous batching** — `vllm-mlx` 0.4.0rc1's `patch_gemma4_attention_for_batching` doesn't forward the `shared_kv` kwarg from `mlx-vlm` 0.6.2, crashing on any batched request. All Gemma4 models in config have `continuous_batching: false` via their `extra_args`. Do not re-enable until a vllm-mlx upstream fix is confirmed.
+All `mlx-vlm`-backed models get Automatic Prefix Caching (APC) enabled via
+`MlxVlm.env_vars()` in `backends.py` (`APC_ENABLED=1`,
+`APC_DISK_PATH=~/.local/share/mlx/apc/<model-name>/`), merged into the
+subprocess env by `manager.py`'s `start_model()`. APC is hash-based,
+block-level KV-cache reuse across requests (LRU + refcount eviction), with
+the disk tier letting a warm cache survive that model's process being
+stopped/evicted — not just concurrent requests within one run. `mlx-lm`-only
+models don't get this (`MlxLm` stays on the base-class no-op `env_vars`);
+`mlx-lm`'s own server has a separate, simpler multi-slot `LRUPromptCache`
+(`--prompt-cache-size`, `--prompt-cache-bytes`), currently left on defaults.
+
+Notes:
+- `/v1/cache/stats` and `/v1/cache/reset` exist per-model on the backend's
+  own port (`http://127.0.0.1:<model-port>/...`, look up the port via `mlx
+  status`) — not proxied through the router.
+- Warm-started completions can diverge slightly from cold ones at near-tied
+  logits (flash-attention batch/tile-shape non-invariance, not a bug —
+  warm-to-warm repeats are deterministic).
+- KV-cache quantization (`--kv-bits`, `--kv-quant-scheme`) is a separate,
+  independently-toggleable `extra_args` flag. Upstream's APC v1 had a caveat
+  that KV-quantized cache paths skip APC — verify this still applies (or
+  doesn't) on the installed `mlx-vlm` version before combining the two on a
+  given model.
+
+## Known bugs and constraints
 
 **Gemma 4 tool-call format** — Gemma4 emits tool calls in a custom non-JSON format (`<|tool_call>` / `<tool_call|>` delimiters, `<|"|>` string escaping, unquoted keys). Without `--enable-auto-tool-choice --tool-call-parser gemma4` in `extra_args`, the parser does not fire and the model loops forever.
 

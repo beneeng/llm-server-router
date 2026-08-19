@@ -8,6 +8,7 @@ Commands:
   mlx logs     [MODEL]          tail the log for a model (default: router)
   mlx models                    list models from config
   mlx install  <env> | --all    create isolated venv(s) for optional backends
+  mlx gc       [--dry-run]      prune APC disk-cache shards older than 48h
 """
 from __future__ import annotations
 
@@ -255,6 +256,23 @@ def memory_cmd() -> None:
         console.print(f"[yellow]Over cap by {total_gb - cap:.2f} GB — eviction pending on next request[/yellow]")
     if free_gb < floor:
         console.print(f"[red]Free RAM {free_gb:.1f} GB below floor {floor:.1f} GB — new model starts will be refused[/red]")
+
+
+@app.command(name="gc")
+def gc_cmd(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report what would be deleted without deleting"),
+    ttl_hours: float = typer.Option(48.0, "--ttl-hours", help="Age threshold in hours"),
+) -> None:
+    """Prune APC disk-cache shard files older than --ttl-hours (default 48h).
+
+    Runs automatically once an hour while the router is up; this is a manual
+    on-demand / dry-run entry point into the same sweep.
+    """
+    from .apc_gc import sweep_once
+
+    removed, freed_bytes = sweep_once(ttl_seconds=ttl_hours * 3600, dry_run=dry_run)
+    verb = "Would remove" if dry_run else "Removed"
+    console.print(f"{verb} {removed} shard file(s), {freed_bytes / 1e9:.2f} GB")
 
 
 def _installable_envs() -> dict[str, list[str]]:

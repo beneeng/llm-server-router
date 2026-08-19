@@ -182,6 +182,15 @@ Notes:
   100GB/model cap in `MlxVlm.APC_DISK_MAX_GB` is a class constant, not
   per-model config; bump it there if a wider cache is needed, but check free
   disk space against `# models × cap` first.
+- **Time-based expiry is separate from the size cap** (`mlx_server/apc_gc.py`).
+  mlx-vlm's own eviction is purely size-triggered — it has no TTL. A daemon
+  thread started from `router.py`'s `lifespan` sweeps `~/.local/share/mlx/apc/`
+  hourly and deletes shard files whose `mtime` is older than 48h
+  (`apc_gc.APC_TTL_SECONDS`). mlx-vlm bumps a shard's `mtime` on every read,
+  so this is really a "last used," not "created," cutoff — a hot entry keeps
+  resetting its own clock. Only runs while the router process is up (`mlx
+  start --model X` alone won't trigger it). Manual/dry-run entry point:
+  `mlx gc [--dry-run] [--ttl-hours N]`.
 - `/v1/cache/stats` and `/v1/cache/reset` exist per-model on the backend's
   own port (`http://127.0.0.1:<model-port>/...`, look up the port via `mlx
   status`) — not proxied through the router.

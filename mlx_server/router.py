@@ -42,6 +42,7 @@ def _backend_unavailable(model_name: str, port: int) -> JSONResponse:
         }},
     )
 
+from .apc_gc import start_background_gc
 from .config import ServerConfig, load_config
 from .keepawake import touch as _touch_keepawake
 from .memory import MemoryManager
@@ -68,6 +69,7 @@ def _memory_manager() -> MemoryManager:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _memory_manager()  # create asyncio.Lock on the running event loop
+    start_background_gc()  # hourly sweep of APC shards older than 48h
     yield
 
 

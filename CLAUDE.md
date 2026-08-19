@@ -165,16 +165,23 @@ https://editor.swagger.io or with `python3 -c "import yaml; yaml.safe_load(open(
 
 All `mlx-vlm`-backed models get Automatic Prefix Caching (APC) enabled via
 `MlxVlm.env_vars()` in `backends.py` (`APC_ENABLED=1`,
-`APC_DISK_PATH=~/.local/share/mlx/apc/<model-name>/`), merged into the
-subprocess env by `manager.py`'s `start_model()`. APC is hash-based,
-block-level KV-cache reuse across requests (LRU + refcount eviction), with
-the disk tier letting a warm cache survive that model's process being
-stopped/evicted — not just concurrent requests within one run. `mlx-lm`-only
-models don't get this (`MlxLm` stays on the base-class no-op `env_vars`);
-`mlx-lm`'s own server has a separate, simpler multi-slot `LRUPromptCache`
-(`--prompt-cache-size`, `--prompt-cache-bytes`), currently left on defaults.
+`APC_DISK_PATH=~/.local/share/mlx/apc/<model-name>/`,
+`APC_DISK_MAX_GB=100`), merged into the subprocess env by `manager.py`'s
+`start_model()`. APC is hash-based, block-level KV-cache reuse across
+requests (LRU + refcount eviction), with the disk tier letting a warm cache
+survive that model's process being stopped/evicted — not just concurrent
+requests within one run. `mlx-lm`-only models don't get this (`MlxLm` stays
+on the base-class no-op `env_vars`); `mlx-lm`'s own server has a separate,
+simpler multi-slot `LRUPromptCache` (`--prompt-cache-size`,
+`--prompt-cache-bytes`), currently left on defaults.
 
 Notes:
+- **`APC_DISK_MAX_GB` must stay set.** mlx-vlm defaults this to `0` (unbounded)
+  when unset — the disk tier then never evicts and grows until the disk
+  fills (this happened once: 1.2TB across 7 models on a 1.8TB disk). The
+  100GB/model cap in `MlxVlm.APC_DISK_MAX_GB` is a class constant, not
+  per-model config; bump it there if a wider cache is needed, but check free
+  disk space against `# models × cap` first.
 - `/v1/cache/stats` and `/v1/cache/reset` exist per-model on the backend's
   own port (`http://127.0.0.1:<model-port>/...`, look up the port via `mlx
   status`) — not proxied through the router.

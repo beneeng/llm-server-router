@@ -122,6 +122,12 @@ class MlxVlm(Backend):
             flags.append("--enable-thinking")
         return flags
 
+    # Per-model cap for the on-disk APC tier. mlx-vlm defaults APC_DISK_MAX_GB
+    # to 0 (unbounded) when unset, which let the cache fill the entire disk
+    # (observed: 1.2TB across 7 models). LRU-evicted once a model's shard
+    # directory exceeds this.
+    APC_DISK_MAX_GB = 100
+
     def env_vars(self, model: "ModelConfig") -> dict[str, str]:
         # Automatic Prefix Caching (mlx-vlm >=0.5): hash-based, block-level KV
         # reuse across requests with LRU+refcount eviction. APC_DISK_PATH adds
@@ -132,6 +138,7 @@ class MlxVlm(Backend):
         return {
             "APC_ENABLED": "1",
             "APC_DISK_PATH": str(STATE_DIR / "apc" / model.name),
+            "APC_DISK_MAX_GB": str(self.APC_DISK_MAX_GB),
         }
 
     def transform_request(self, body: dict, model: "ModelConfig") -> None:

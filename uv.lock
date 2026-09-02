@@ -622,22 +622,21 @@ wheels = [
 
 [[package]]
 name = "mlx-audio"
-version = "0.4.4"
+version = "0.5.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "huggingface-hub" },
     { name = "miniaudio" },
     { name = "mlx" },
-    { name = "mlx-lm" },
     { name = "numpy" },
     { name = "scipy" },
     { name = "sounddevice" },
     { name = "tqdm" },
     { name = "transformers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/af/1e/f712c9f7997e5051c4da3b658f38162203bb703c750741984c8358c8b897/mlx_audio-0.4.4.tar.gz", hash = "sha256:d751e5f477517e4e7f04de5567318e2fe91b4606af5d7e4b2973603c4777814a", size = 1386491, upload-time = "2026-06-06T15:32:03.504Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e4/6b/117ed0a7e8375d615fbcc7cb96b54a1cf8dbadb3954e8a392ca082a8509f/mlx_audio-0.5.1.tar.gz", hash = "sha256:67d11c213504306477a59290a1b2b5185cc0c85cbb2730ed84e9ee170864c98a", size = 1637158, upload-time = "2026-08-31T19:39:48.566Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b8/4d/93ac0e0526591c856a1ea2cd00a41f31530d9e021cc95bc9400550926d51/mlx_audio-0.4.4-py3-none-any.whl", hash = "sha256:39fe81b03e2b1354be70de82dc8bf01dd6e75efcb464150afef89f18f734d0d5", size = 1669932, upload-time = "2026-06-06T15:32:01.807Z" },
+    { url = "https://files.pythonhosted.org/packages/1f/53/4b979a2564d9107b3dbccdb7f809ad4ebc65e3d4e6a14f69c100fd82ba35/mlx_audio-0.5.1-py3-none-any.whl", hash = "sha256:55ff0949d8c5750b9d779872dbaa874cf30ca21a04d282f7a4c3acc66962e45c", size = 1977073, upload-time = "2026-08-31T19:39:47.154Z" },
 ]
 
 [[package]]
@@ -695,7 +694,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "iniconfig", specifier = ">=2.3.0" },
     { name = "mlx-lm", specifier = ">=0.31.3" },
-    { name = "mlx-vlm", specifier = ">=0.6.13" },
+    { name = "mlx-vlm", specifier = "==0.7.0rc0" },
     { name = "pip", specifier = ">=26.1.2" },
     { name = "pluggy", specifier = ">=1.6.0" },
     { name = "psutil", specifier = ">=5.9" },
@@ -709,7 +708,7 @@ requires-dist = [
 
 [[package]]
 name = "mlx-vlm"
-version = "0.6.13"
+version = "0.7.0rc0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastapi" },
@@ -717,20 +716,21 @@ dependencies = [
     { name = "miniaudio" },
     { name = "mlx" },
     { name = "mlx-audio" },
-    { name = "mlx-lm" },
     { name = "numpy" },
     { name = "opencv-python" },
     { name = "pillow" },
     { name = "python-multipart" },
     { name = "requests" },
+    { name = "sentencepiece" },
     { name = "starlette" },
     { name = "tqdm" },
     { name = "transformers" },
     { name = "uvicorn" },
+    { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/29/43/9426a1b1e2be786b901fa23e752fe9c9a8d4329c4a57fe79aaecb6aa6d35/mlx_vlm-0.6.13.tar.gz", hash = "sha256:c9564d6f01df6cc72a47fb64fbc4c28918021849ee6451bc241cd78a4a5bd327", size = 1827027, upload-time = "2026-08-12T21:10:42.456Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/69/91/edc73054ae3650e116ac9e0dbd040e753eae24dec10dd415f796e77d74e2/mlx_vlm-0.7.0rc0.tar.gz", hash = "sha256:b30f76bdef855e26cfadb2f407e285fbe2a606ee577670e2cd859ea1829904b3", size = 2113482, upload-time = "2026-08-31T19:41:30.031Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3f/0a/40a5bfb3b18a0ba87e2797369ede10e30a560e7eae96e868fab117372e3b/mlx_vlm-0.6.13-py3-none-any.whl", hash = "sha256:8035a73761a1055e11d3e55504bfb13a5a4ed4ada863fb396b029069be105e92", size = 2294920, upload-time = "2026-08-12T21:10:40.701Z" },
+    { url = "https://files.pythonhosted.org/packages/c8/de/b428abf5302674338b7e62b11fcad2ad9922ee0877174c8bff14ee518a77/mlx_vlm-0.7.0rc0-py3-none-any.whl", hash = "sha256:a66b23b204fe55aac8dbd990608444d37373fb53193ba5a4d6b23a44bbb19636", size = 2670943, upload-time = "2026-08-31T19:41:28.515Z" },
 ]
 
 [[package]]

@@ -159,6 +159,16 @@ paths:
         Image content sent to a text-only model (accepts_image_input=false)
         returns 400 before touching the backend.
 
+        **Video input (mlx-vlm only):**  Same gate as image input
+        (`accepts_image_input: true`, no separate video flag):
+
+            {"type": "video_url", "video_url": {"url": "file:///path/to/clip.mp4"}}
+
+        Handled entirely inside the vendored mlx-vlm server: native
+        video processors receive it directly; others get an automatic
+        frame-sampling fallback (up to 16 frames, default 2 fps) sent
+        as ordered images instead.
+
         **Thinking mode (mlx-vlm):**  Use `thinking_token_budget` to set
         the token limit for the thinking phase.  The router renames this
         to `thinking_budget` for the backend.  Incompatible with MTP
@@ -594,7 +604,7 @@ components:
       properties:
         type:
           type: string
-          enum: [text, image_url, image]
+          enum: [text, image_url, image, video_url, video, input_video]
         text:
           type: string
         image_url:
@@ -605,6 +615,22 @@ components:
               description: >
                 Data URI (base64) or URL.  Only for models with
                 `accepts_image_input: true`.
+          required:
+            - url
+        video_url:
+          type: object
+          properties:
+            url:
+              type: string
+              description: >
+                Local file path, `file://` URI, or URL of a video file.
+                Only for `backend: mlx-vlm` models (same
+                `accepts_image_input: true` gate as image_url — there is
+                no separate video capability flag). The vendored
+                mlx-vlm server decodes the video itself: if the model's
+                processor has no native `video_processor`, it falls back
+                to sampling up to 16 evenly-spaced frames (default
+                `fps: 2.0`) and sends them as ordered images instead.
           required:
             - url
 

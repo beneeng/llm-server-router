@@ -30,6 +30,8 @@ curl -X POST http://localhost:6300/v1/chat/completions \
 
 **Image input** (VLM only): Use `{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}` content blocks. Text-only models return 400.
 
+**Video input** (mlx-vlm only, same gate as image input): Use `{"type":"video_url","video_url":{"url":"file:///path/to/clip.mp4"}}` content blocks. mlx-vlm decodes the video itself — native processors use it directly, others get up to 16 frames auto-sampled (2 fps default) and sent as images.
+
 ## Text-to-Speech
 
 ```bash
@@ -49,6 +51,8 @@ curl -X POST http://localhost:6300/v1/audio/transcriptions \
 ```
 
 Returns `{"text":"..."}`. Use `response_format=text` for plain text.
+
+Two models available: `whisper-large` (whisper-large-v3, best accuracy) and `whisper-turbo` (whisper-large-v3-turbo, pruned decoder — faster, marginally less accurate).
 
 ## Image Generation
 

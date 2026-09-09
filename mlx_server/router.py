@@ -22,7 +22,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
-def _has_image_content(body: dict) -> bool:
+def _has_non_text_content(body: dict) -> bool:
     """Return True if any message in the request contains a non-text content block."""
     for msg in body.get("messages", []):
         content = msg.get("content")
@@ -103,7 +103,7 @@ async def proxy(path: str, request: Request) -> Response:
     if body_bytes:
         try:
             body = json.loads(body_bytes)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             pass
         if not model_name:
             model_name = body.get("model")
@@ -112,7 +112,7 @@ async def proxy(path: str, request: Request) -> Response:
     if not model_name and body_bytes:
         ct = request.headers.get("content-type", "")
         if "multipart/form-data" in ct:
-            m = re.search(rb'name="model"\r\n\r\n([^\r\n-]+)', body_bytes)
+            m = re.search(rb'name="model"\r\n\r\n([^\r\n]+)', body_bytes)
             if m:
                 model_name = m.group(1).decode(errors="replace").strip()
 
@@ -148,7 +148,7 @@ async def proxy(path: str, request: Request) -> Response:
         )
 
     # --- reject image content for text-only models before touching the backend ---
-    if body and _has_image_content(body) and not model_cfg.accepts_image_input:
+    if body and _has_non_text_content(body) and not model_cfg.accepts_image_input:
         multimodal_models = [m.name for m in cfg.models if m.accepts_image_input]
         return JSONResponse(
             status_code=400,

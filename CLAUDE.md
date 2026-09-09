@@ -109,7 +109,18 @@ since the script's own dir is on `sys.path`.
 7. Proxy to `http://127.0.0.1:<port>/<path>` via `httpx`
 
 Image-content requests to a model whose `accepts_image_input` is False are
-rejected with 400 before the backend is touched.
+rejected with 400 before the backend is touched. This same gate covers video:
+the router's non-text-content check does not distinguish `image_url` from
+`video_url`/`video`/`input_video` blocks, and there is no separate
+`accepts_video_input` flag — any `mlx-vlm` model can receive a `video_url`
+block today. Video handling itself lives entirely in the vendored `mlx-vlm`
+server (untouched by `mlx_vlm_wrapper.py`): `resolve_video_inputs()` checks
+whether the model's processor has a native `video_processor`; if not, it
+decodes the video with OpenCV and falls back to sending up to 16
+evenly-spaced frames (default 2 fps) as ordered images instead. This is not
+visible anywhere in this repo's own code — check `mlx_vlm/generate/video.py`
+and `mlx_vlm/server/openai.py` in the installed package if debugging video
+requests.
 
 For streaming requests, the `httpx.AsyncClient` **must** be opened inside `_stream_gen()`, not in the outer `proxy()` scope — the outer async context exits before Starlette iterates the generator, which closes the client prematurely.
 

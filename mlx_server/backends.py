@@ -160,7 +160,7 @@ class MlxAudio(Backend):
 
     name = "mlx-audio"
     env = "audio"
-    packages = ("mlx-audio", "fastapi", "uvicorn[standard]", "pydantic", "numpy")
+    packages = ("mlx-audio", "fastapi", "uvicorn[standard]", "pydantic", "numpy", "python-multipart")
     wrapper = "mlx_audio_wrapper.py"
     modalities = frozenset({"audio"})
 

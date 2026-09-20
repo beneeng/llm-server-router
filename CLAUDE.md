@@ -70,6 +70,26 @@ curl -X POST http://localhost:6300/v1/images/generations \
 
 There are no automated integration tests. Verification is manual via `curl` + `mlx logs`.
 
+## Speculative-decoding benchmarks
+
+```bash
+scripts/bench_draft_variants.py --model qwen3.8-27b \
+    --variant "baseline:" --variant "dflash2:--draft-model incoai/Qwen3.8-27B-DFlash2 --draft-kind dflash"
+scripts/bench_speculative.py --compare /tmp/bench_speculative.jsonl
+```
+
+Each variant gets a cold backend on port 6399 (the router and the model's own
+port are untouched) because mlx-vlm reads drafter settings from the environment
+at startup, not per request. Base argv comes from `ModelConfig.server_args()`;
+a variant is only the extra flags, and mlx-vlm's argparse takes the last
+occurrence, so `--draft-model` can be overridden by appending it.
+
+Judge results by **tokens/round and acceptance**, not tok/s alone: acceptance is
+a model property and therefore independent of machine load. mlx-vlm returns both
+in the non-streaming response's `timings` object (llama.cpp field names).
+Raising `--draft-block-size` usually *loses*: deeper drafts cost extra drafter
+forwards that a falling acceptance rate can't pay for.
+
 ## Architecture
 
 One subprocess per model (ports 6301+) and one FastAPI uvicorn router (port 6300).

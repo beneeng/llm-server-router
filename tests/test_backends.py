@@ -19,7 +19,7 @@ from mlx_server.config import ModelConfig
 
 def test_registry_keys():
     assert set(BACKENDS) == {
-        "mlx-lm", "mlx-vlm", "mlx-audio", "mflux", "mflux2", "mflux-ideogram",
+        "mlx-lm", "mlx-vlm", "mlx-vlm-dsv4", "mlx-audio", "mflux", "mflux2", "mflux-ideogram",
     }
 
 
@@ -139,3 +139,48 @@ def test_mlx_lm_transform_leaves_enable_thinking_true():
     body = {"enable_thinking": True}
     m.resolve_backend().transform_request(body, m)
     assert body["enable_thinking"] is True
+
+
+# ── mlx-vlm-dsv4 (DeepSeek-V4) ────────────────────────────────────────────────
+
+def _dsv4(**kw) -> ModelConfig:
+    return ModelConfig(name="ds", source="mlx-community/DeepSeek-V4-Flash-4bit",
+                       backend="mlx-vlm-dsv4", **kw)
+
+
+def test_dsv4_is_text_only_mlx_vlm_variant():
+    b = BACKENDS["mlx-vlm-dsv4"]
+    assert isinstance(b, MlxVlm) and b.env == "main"
+    assert b.wrapper == "mlx_vlm_dsv4_wrapper.py"
+    assert _dsv4().accepts_image_input is False
+
+
+def test_dsv4_argv_uses_dsv4_wrapper_and_thinking_flag():
+    args = _dsv4(thinking=True, port=6301).server_args()
+    assert args[1].endswith("mlx_vlm_dsv4_wrapper.py")
+    assert "--enable-thinking" in args and "--trust-remote-code" in args
+
+
+def test_dsv4_selects_dsml_parser_only_with_tools():
+    m = _dsv4()
+    with_tools = {"messages": [], "tools": [{"type": "function"}]}
+    m.resolve_backend().transform_request(with_tools, m)
+    assert with_tools["tool_parser"] == "deepseek_v4_dsml"
+
+    plain = {"messages": []}
+    m.resolve_backend().transform_request(plain, m)
+    assert "tool_parser" not in plain
+
+
+def test_dsv4_respects_caller_tool_parser():
+    m = _dsv4()
+    body = {"tools": [{}], "tool_parser": "json_tools"}
+    m.resolve_backend().transform_request(body, m)
+    assert body["tool_parser"] == "json_tools"
+
+
+def test_dsv4_strips_chat_template_kwargs_like_mlx_vlm():
+    m = _dsv4()
+    body = {"chat_template_kwargs": {"x": 1}}
+    m.resolve_backend().transform_request(body, m)
+    assert "chat_template_kwargs" not in body

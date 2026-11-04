@@ -110,7 +110,7 @@ server:
 models:
   - name: my-llm               # alias used by clients
     source: org/repo-id        # HuggingFace model ID
-    backend: mlx-vlm           # mlx-lm | mlx-vlm | mlx-audio | mflux  (default: mlx-lm)
+    backend: mlx-vlm           # mlx-lm | mlx-vlm | mlx-vlm-dsv4 | mlx-audio | mflux  (default: mlx-lm)
     # multimodal: true         # optional: override image-input support; omit to use
                                #   the backend's own capability (mlx-vlm already accepts images)
     mtp: false                 # true → MTP speculative decoding active

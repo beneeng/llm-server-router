@@ -1,12 +1,14 @@
 # models.yaml for the second machine (Apple M3, 256 GB RAM).
 # Install: mkdir -p ~/.config/mlx && cp config/models.deepseek-m3.yaml ~/.config/mlx/models.yaml
 #
-# DeepSeek-V4-Flash: 284B params, 4-bit, ~151 GB weights. Runs on mlx-vlm
-# (mlx_vlm/models/deepseek_v4), the same engine as mlx_vlm.chat.
+# DeepSeek-V4-Flash: 284B params, 4-bit, ~151 GB weights. Needs mlx-vlm >= 0.7.11
+# (0.7.0 mis-maps embed_tokens.scales/biases and hc_head.*, which produced
+# garbage output behind the wrapper's non-strict loader).
 #
-# Known gap: mlx-vlm 0.7.0 ships no tool-call parser for DeepSeek V4's DSML
-# format, so API tool calls are probably not parsed into `tool_calls`.
-# Verify with a tools request after first start (see plan, step 5).
+# The checkpoint ships a stub chat template without tools. The `mlx-vlm-dsv4`
+# backend replaces it with DeepSeek's reference encoder and adds a DSML
+# tool-call parser (see mlx_server/mlx_vlm_dsv4_wrapper.py), so tools, tool
+# results and thinking work through /v1/chat/completions.
 
 server:
   host: 127.0.0.1
@@ -19,11 +21,12 @@ server:
 models:
   - name: deepseek-v4-flash
     source: mlx-community/DeepSeek-V4-Flash-4bit
-    backend: mlx-vlm
-    multimodal: false      # text-only: reject image content with 400 at the router
+    backend: mlx-vlm-dsv4  # text-only; image content is rejected with 400 at the router
+    thinking: true         # default <think> mode; override per request with enable_thinking
     lazy: false            # only model on this machine, start with `mlx start`
     memory_gb: 165         # 151 GB weights + KV cache / overhead
     defaults:
-      temperature: 0.6     # check against the model card
-      top_p: 0.95
+      # DeepSeek's model card: "for local deployment ... temperature = 1.0, top_p = 1.0".
+      temperature: 1.0
+      top_p: 1.0
       max_tokens: 16384

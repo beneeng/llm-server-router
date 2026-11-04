@@ -155,6 +155,26 @@ class MlxVlm(Backend):
         body.pop("chat_template_kwargs", None)
 
 
+class MlxVlmDsv4(MlxVlm):
+    """DeepSeek-V4 via mlx_vlm.server with DeepSeek's own prompt encoder.
+
+    The checkpoint's chat template is a stub without tools; the wrapper swaps in
+    the reference encoder and a DSML tool parser (see mlx_vlm_dsv4_wrapper.py).
+    Text-only.
+    """
+
+    name = "mlx-vlm-dsv4"
+    wrapper = "mlx_vlm_dsv4_wrapper.py"
+    accepts_image_input = False
+
+    def transform_request(self, body: dict, model: "ModelConfig") -> None:
+        super().transform_request(body, model)
+        # The stub chat template carries no tool markers, so the parser cannot
+        # be inferred from it; select the DSML parser explicitly.
+        if body.get("tools"):
+            body.setdefault("tool_parser", "deepseek_v4_dsml")
+
+
 class MlxAudio(Backend):
     """TTS / STT via mlx-audio (isolated venv)."""
 
@@ -212,5 +232,5 @@ class MfluxIdeogram(Backend):
 
 
 BACKENDS: dict[str, Backend] = {
-    b.name: b for b in (MlxLm(), MlxVlm(), MlxAudio(), Mflux(), Mflux2(), MfluxIdeogram())
+    b.name: b for b in (MlxLm(), MlxVlm(), MlxVlmDsv4(), MlxAudio(), Mflux(), Mflux2(), MfluxIdeogram())
 }

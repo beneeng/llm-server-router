@@ -106,6 +106,7 @@ Models reference a backend by name (`backend:` in models.yaml). To add a modalit
 |---|---|---|
 | `mlx-lm` | `mlx_lm_wrapper.py` | `main` (tool venv) |
 | `mlx-vlm` | `mlx_vlm_wrapper.py` | `main` (tool venv) |
+| `mlx-vlm-dsv4` | `mlx_vlm_dsv4_wrapper.py` | `main` (tool venv) |
 | `mlx-audio` | `mlx_audio_wrapper.py` | `audio` → `~/.local/share/mlx/venvs/audio/` |
 | `mflux` | `mflux_wrapper.py` | `image` → `~/.local/share/mlx/venvs/image/` |
 | `mflux2` | `mflux2_wrapper.py` | `image` → `~/.local/share/mlx/venvs/image/` |
@@ -239,6 +240,11 @@ Notes:
 **Gemma 4 tool-call format** — Gemma4 emits tool calls in a custom non-JSON format (`<|tool_call>` / `<tool_call|>` delimiters, `<|"|>` string escaping, unquoted keys). Without `--enable-auto-tool-choice --tool-call-parser gemma4` in `extra_args`, the parser does not fire and the model loops forever.
 
 **Gemma 4 MLLM tool history bug (mlx_vlm_wrapper workaround)** — mlx-vlm's `MLLM.stream_chat` silently drops assistant messages where `content=null`, even when `tool_calls` is present. The result is the model sees only the original user message on every turn and loops. **Fix**: `mlx_vlm_wrapper.py` pre-renders tool call + response tokens directly into the assistant message `content` string using native Gemma4 special tokens before forwarding.
+
+**DeepSeek-V4 (`mlx-vlm-dsv4`)** - three separate traps, all hit on the M3 deployment:
+- *Garbage output after a silent load.* mlx-vlm 0.7.0 does not remap `embed_tokens.scales/biases` and `hc_head.*` for the mlx-community 4-bit checkpoint (fixed in 0.7.11, hence the pin). `mlx_vlm_wrapper.py` loads non-strictly and hid the error, so the server answered with noise. `mlx_vlm_dsv4_wrapper.py` deliberately keeps strict loading. If this model ever prints noise again, run `python -m mlx_vlm.server` without our wrapper first: a `Received N parameters not in model` error means a version problem.
+- *Stub chat template.* The repo's `chat_template.jinja` has no tools, no `tool` role, no `tool_calls` (a request with `tools` is only ~11 prompt tokens). The real format is DeepSeek's `encoding_dsv4.py`, vendored unchanged in `mlx_server/dsv4/` (MIT, see `THIRD_PARTY_NOTICES.md`; re-vendor instead of editing). The wrapper swaps `DeepseekV4Processor.apply_chat_template` for it.
+- *No DSML parser upstream.* mlx-vlm cannot infer a parser from the stub template, so the backend's `transform_request` sets `tool_parser: deepseek_v4_dsml`, registered by the wrapper in `mlx_vlm.tools.registry`. These hooks are tied to mlx-vlm 0.7.11 (`mlx_vlm.tools.*`); `tests/test_dsv4.py` fails loudly on a bump that moves them. Tokenizer adds no BOS, so the encoder's own BOS is the only one.
 
 **Gemma 4 repetition collapse** — separate structural bug triggered by large system prompts (>10K chars) or many tool definitions (>5-6). Not fixable with `repetition_penalty`. Gemma is excluded from opencode; use via Pi harness or direct curl.
 

@@ -176,6 +176,16 @@ paths:
 
         **Enable thinking (mlx-lm):**  Use `enable_thinking: true/false`.
 
+        **DeepSeek-V4 (`backend: mlx-vlm-dsv4`):**  Text-only.  The prompt is
+        built with DeepSeek's reference encoder, because the checkpoint's own
+        chat template is a stub without tool support.  `tools` and `role: tool`
+        messages are supported; tool calls are parsed from DeepSeek's DSML
+        format into OpenAI `tool_calls` (streaming included) and reasoning is
+        returned as `reasoning_content`.  `enable_thinking: false` selects the
+        non-thinking mode, `reasoning_effort: high|max` is forwarded to the
+        encoder.  The router sets `tool_parser: deepseek_v4_dsml` when `tools`
+        are present and the caller did not choose a parser.
+
         **Streaming:**  Set `"stream": true` for SSE token-by-token output.
 
         **Default hyperparams:**  Defined per-model in `models.yaml`
@@ -530,8 +540,9 @@ components:
         enable_thinking:
           type: boolean
           description: >
-            Enable/disable thinking mode (mlx-lm / Gemma4).  False is
-            moved into `chat_template_kwargs` by the router.
+            Enable/disable thinking mode (mlx-lm / Gemma4 / DeepSeek-V4).
+            False is moved into `chat_template_kwargs` by the router for
+            mlx-lm; mlx-vlm and mlx-vlm-dsv4 read it natively.
         chat_template_kwargs:
           type: object
           description: Passed through to the tokenizer for mlx-lm; stripped for mlx-vlm
@@ -549,6 +560,16 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ToolDefinition"
+        tool_parser:
+          type: string
+          description: >
+            Tool-call parser override (mlx-vlm / mlx-vlm-dsv4).  Normally left
+            unset; the router sets `deepseek_v4_dsml` for DeepSeek-V4 when
+            `tools` are present.
+        reasoning_effort:
+          type: string
+          enum: [high, max]
+          description: Forwarded to DeepSeek-V4's encoder (mlx-vlm-dsv4 only); other values are ignored.
         tool_choice:
           oneOf:
             - type: string

@@ -26,7 +26,10 @@ curl -X POST http://localhost:6300/v1/chat/completions \
 | `messages` | Standard OpenAI format; image URLs for VLMs |
 | `stream` | `true` → SSE `data: ...\n\n` |
 | `thinking_token_budget` | Router renames to `thinking_budget` for mlx-vlm; stripped for MTP models |
-| `enable_thinking` | Router moves into `chat_template_kwargs` for mlx-lm |
+| `enable_thinking` | Router moves into `chat_template_kwargs` for mlx-lm; native for mlx-vlm and `mlx-vlm-dsv4` (selects `<think>` vs `</think>` mode) |
+| `tools` | OpenAI function tools. For `mlx-vlm-dsv4` (DeepSeek-V4) the router adds `tool_parser: deepseek_v4_dsml` unless the caller sets one |
+
+**DeepSeek-V4** (`backend: mlx-vlm-dsv4`, text-only): prompts are built with DeepSeek's reference encoder (the checkpoint's own chat template is a stub without tools). Tool calls come back as standard OpenAI `tool_calls` (parsed from DSML, also when streaming); reasoning is returned in `reasoning_content`. `enable_thinking: false` switches to non-thinking mode; `reasoning_effort: "high"|"max"` is forwarded to the encoder.
 
 **Image input** (VLM only): Use `{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}` content blocks. Text-only models return 400.
 

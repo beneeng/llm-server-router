@@ -61,8 +61,14 @@ def register_tool_parser(registry) -> None:
 
     sys.modules[f"mlx_vlm.tools.parsers.{PARSER_NAME}"] = dsml_parser
     spec = registry.ParserSpec(PARSER_NAME, ((dsml_parser.tool_call_start,),))
-    registry.SPECS = tuple(s for s in registry.SPECS if s.name != PARSER_NAME) + (spec,)
+    specs = tuple(s for s in registry.SPECS if s.name != PARSER_NAME) + (spec,)
+    registry.SPECS = specs
     registry._BY_NAME[PARSER_NAME] = spec
+    # The request schema validates `tool_parser` against `mlx_vlm.tools.SPECS`,
+    # which is a separate binding of the same tuple (`from .registry import SPECS`).
+    import mlx_vlm.tools as tools_pkg
+
+    tools_pkg.SPECS = specs
 
 
 def _apply_patches() -> None:

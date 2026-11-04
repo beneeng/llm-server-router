@@ -223,6 +223,20 @@ class TestWrapperPatches:
         module = registry.load_tool_module("deepseek_v4_dsml")
         assert module.tool_call_start == "<｜DSML｜tool_calls>"
 
+    def test_request_schema_accepts_the_parser_override(self):
+        """The router sends tool_parser; the server's pydantic schema must accept it."""
+        from pydantic import ValidationError
+        from mlx_vlm.server.schemas import ChatRequest
+        from mlx_server import mlx_vlm_dsv4_wrapper as w
+        from mlx_vlm.tools import registry
+
+        body = dict(model="m", messages=[{"role": "user", "content": "hi"}],
+                    tool_parser="deepseek_v4_dsml")
+        w.register_tool_parser(registry)
+        assert ChatRequest(**body).tool_parser == "deepseek_v4_dsml"
+        with pytest.raises(ValidationError):
+            ChatRequest(**{**body, "tool_parser": "no_such_parser"})
+
     def test_extractor_turns_dsml_into_openai_tool_calls(self):
         from mlx_vlm.tools import registry
         from mlx_vlm.tools.extractor import process_tool_calls

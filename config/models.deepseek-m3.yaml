@@ -1,0 +1,29 @@
+# models.yaml for the second machine (Apple M3, 256 GB RAM).
+# Install: mkdir -p ~/.config/mlx && cp config/models.deepseek-m3.yaml ~/.config/mlx/models.yaml
+#
+# DeepSeek-V4-Flash: 284B params, 4-bit, ~151 GB weights. Runs on mlx-vlm
+# (mlx_vlm/models/deepseek_v4), the same engine as mlx_vlm.chat.
+#
+# Known gap: mlx-vlm 0.7.0 ships no tool-call parser for DeepSeek V4's DSML
+# format, so API tool calls are probably not parsed into `tool_calls`.
+# Verify with a tools request after first start (see plan, step 5).
+
+server:
+  host: 127.0.0.1
+  port: 6300
+  base_port: 6301
+  # 256 GB physical * ~0.78: 151 GB weights + KV cache + headroom for OS/GPU.
+  max_total_memory_gb: 200.0
+  min_free_memory_gb: 20.0
+
+models:
+  - name: deepseek-v4-flash
+    source: mlx-community/DeepSeek-V4-Flash-4bit
+    backend: mlx-vlm
+    multimodal: false      # text-only: reject image content with 400 at the router
+    lazy: false            # only model on this machine, start with `mlx start`
+    memory_gb: 165         # 151 GB weights + KV cache / overhead
+    defaults:
+      temperature: 0.6     # check against the model card
+      top_p: 0.95
+      max_tokens: 16384

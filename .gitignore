@@ -176,3 +176,6 @@ pyrightconfig.json
 # End of https://www.toptal.com/developers/gitignore/api/python
 /.DS_Store
 /.pi/
+
+# Local Claude Code settings (machine-specific paths and permissions)
+/.claude/settings.local.json

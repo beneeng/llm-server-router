@@ -9,6 +9,8 @@ Run with:
     ~/.local/share/uv/tools/mlx-server/bin/python -m pytest tests/test_backends.py -v
 """
 
+from pathlib import Path
+
 import pytest
 
 from mlx_server.backends import BACKENDS, Mflux, MlxAudio, MlxLm, MlxVlm
@@ -184,3 +186,14 @@ def test_dsv4_strips_chat_template_kwargs_like_mlx_vlm():
     body = {"chat_template_kwargs": {"x": 1}}
     m.resolve_backend().transform_request(body, m)
     assert "chat_template_kwargs" not in body
+
+
+def test_source_tilde_is_expanded():
+    cfg = ModelConfig(name="x", source="~/.cache/m", backend="mlx-vlm")
+    assert cfg.source == str(Path("~/.cache/m").expanduser())
+    assert not cfg.source.startswith("~")
+
+
+def test_source_hf_repo_id_untouched():
+    cfg = ModelConfig(name="x", source="org/model", backend="mlx-vlm")
+    assert cfg.source == "org/model"

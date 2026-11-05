@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from .backends import BACKENDS
 
@@ -71,6 +71,12 @@ class ModelConfig(BaseModel):
     memory_gb: float | None = None
     # Assigned at load time by ServerConfig
     port: int = 0
+
+    @field_validator("source")
+    @classmethod
+    def _expand_source(cls, v: str) -> str:
+        # Local checkpoints may be written as ~/...; HF repo ids never start with ~.
+        return os.path.expanduser(v) if v.startswith("~") else v
 
     @model_validator(mode="after")
     def _check_backend(self) -> "ModelConfig":

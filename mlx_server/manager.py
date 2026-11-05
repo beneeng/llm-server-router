@@ -173,6 +173,10 @@ def start_model(model: ModelConfig) -> int:
             stderr=subprocess.STDOUT,
             start_new_session=True,
             env=env,
+            # Never inherit the router's cwd: if that directory is deleted or
+            # replaced while the router runs (re-cloned repo, removed worktree),
+            # the child crashes on import (transformers calls Path("src").resolve()).
+            cwd=STATE_DIR,
         )
 
     # Brief pause to catch immediate failures (e.g. bad args)

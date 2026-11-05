@@ -126,3 +126,38 @@ def test_timeout_falls_back_to_force_stop(monkeypatch):
     asyncio.run(asyncio.wait_for(_run_enforce(mgr), timeout=2.0))
 
     assert stopped == ["a"]
+
+
+def test_evicts_running_model_the_router_never_saw(monkeypatch):
+    """A model started outside the router's request path (`mlx start --model X`,
+    or still running from before a router restart) is not in the in-memory LRU.
+    It must still be evictable, otherwise a second model can never be loaded and
+    the request fails with "Not enough free memory"."""
+    alive = {"a": 1001}
+    stopped: list[str] = []
+    _patch_pressure(monkeypatch, alive, stopped, pressure_names={"a"})
+
+    cfg = _cfg("a", "requester")
+    mgr = MemoryManager(cfg)
+    # "a" is deliberately never _touch()ed: only the requester went through the router.
+    mgr._touch("requester")
+
+    asyncio.run(_run_enforce(mgr))
+
+    assert stopped == ["a"]
+
+
+def test_untracked_model_is_evicted_before_a_tracked_one(monkeypatch):
+    """A model with no recorded router use is older than any that has one."""
+    alive = {"seen": 1001, "unseen": 1002}
+    stopped: list[str] = []
+    _patch_pressure(monkeypatch, alive, stopped, pressure_names={"seen", "unseen"})
+
+    cfg = _cfg("seen", "unseen", "requester")
+    mgr = MemoryManager(cfg)
+    mgr._touch("seen")
+    mgr._touch("requester")
+
+    asyncio.run(_run_enforce(mgr))
+
+    assert stopped[0] == "unseen"

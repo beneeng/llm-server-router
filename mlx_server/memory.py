@@ -238,7 +238,12 @@ class MemoryManager:
     def _pick_lru_victim(self, skip: str, busy_ok: bool = False) -> str | None:
         pids = _load_pids()
         now = time.monotonic()
-        for name in self._lru:  # leftmost = least recently used
+        # `_lru` only knows models that were requested through this router
+        # process. A model started with `mlx start --model X`, or left running
+        # across a router restart, has no entry. It must still be evictable, and
+        # having no recorded use it counts as older than every tracked model.
+        untracked = [m.name for m in self._cfg.models if m.name not in self._lru]
+        for name in [*untracked, *self._lru]:  # leftmost = least recently used
             if name == skip:
                 continue
             model_cfg = self._cfg.model_by_name(name)

@@ -179,3 +179,6 @@ pyrightconfig.json
 
 # Local Claude Code settings (machine-specific paths and permissions)
 /.claude/settings.local.json
+
+# Personal model config (copy config/models.example.yaml to ~/.config/mlx/models.yaml)
+/config/models.yaml

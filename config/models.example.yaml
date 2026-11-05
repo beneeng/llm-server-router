@@ -1,0 +1,407 @@
+server:
+  host: 127.0.0.1
+  port: 6300
+  base_port: 6301  # models get ports 6301, 6302, ...
+  # Evict LRU when total model RSS + projected new-model footprint would exceed this.
+  # Set well below physical RAM to leave room for OS, KV-cache spikes, and the kernel.
+  # Rule of thumb: physical_ram * 0.7 on a unified-memory Mac.
+  # Raised from 88 for qwen3.8-flash-next-ple (~78.46 GB peak, see below) —
+  # 128 GB physical, ~24 GB reserved for OS/GPU overhead.
+  max_total_memory_gb: 104.0
+  # Hard floor: refuse to start a model if free system RAM (after projected load)
+  # would drop below this value. Last-resort backstop against swap/OOM.
+  min_free_memory_gb: 12.0
+
+
+
+models:
+  # ── Qwen3.6 MoE 35B-A3B — 8-bit ──────────────────────────────────────────
+  # 35B total / 3B active, thinking mode enabled, agentic coding + vision.
+  # 8-bit affine quant: less degeneration than 4-bit at the cost of ~2× VRAM.
+  # MTP drafter (mlx-community/Qwen3.6-35B-A3B-MTP-5bit) enabled for ~1.5-2x
+  # throughput. thinking_budget is incompatible with MTP; max_tokens is the backstop.
+  # Never use temperature=0 with thinking mode (vendor doc prohibition).
+  - name: qwen3.6-moe-8bit
+    source: mlx-community/Qwen3.6-35B-A3B-8bit
+    backend: mlx-vlm
+    mtp: true
+    thinking: true
+    memory_gb: 41  # ~35 GB weights (8-bit MoE) + vision encoder + KV-cache + ~1 GB MTP drafter
+    extra_args:
+      - "--draft-model"
+      - "mlx-community/Qwen3.6-35B-A3B-MTP-5bit"
+    defaults:
+      temperature: 0.7
+      top_p: 0.9
+      top_k: 40
+      min_p: 0.1
+      repetition_penalty: 1.05
+      max_tokens: 16384
+
+  # ── Qwen3.6 27B dense — Uncensored Heretic v2, 8-bit ────────────────────────
+  # Flagship-level coding model, direct generation (no extended thinking).
+  # Abliterated via Heretic v1.2.0 + MPOA (froggeric), tuned specifically for
+  # Qwen3.6's hybrid attention (3:1 linear-to-softmax layer ratio) — avoids
+  # the refusal-triggered interruptions the stock instruct model produces
+  # mid-task. Ships its own rewritten chat template with a
+  # <|think_on|>/<|think_off|> toggle; verify --enable-thinking / the
+  # router's thinking_budget transform still behave correctly against it.
+  # MTP drafter is the standard (non-abliterated) one — reused as-is, same
+  # pattern as qwen3.6-moe-heretic; draft/target abliteration mismatch
+  # doesn't matter since the target verifies every drafted token.
+  - name: qwen3.6-27b
+    source: froggeric/Qwen3.6-27B-Uncensored-Heretic-v2-MLX-8bit
+    backend: mlx-vlm
+    mtp: true
+    thinking: true
+    lazy: true
+    memory_gb: 37  # ~29.5 GB weights (8-bit) + KV-cache overhead + ~1-2 GB MTP drafter
+    extra_args:
+      - "--draft-model"
+      - "mlx-community/Qwen3.6-27B-MTP-5bit"
+    defaults:
+      temperature: 1.0
+      top_p: 0.95
+      top_k: 20
+      repetition_penalty: 1.05
+      max_tokens: 16384
+
+  # ── Qwen3.6 27B dense — ThinkingCap (efficient reasoning), 6-bit ───────────
+  # BottleCap AI fine-tune: RL reward shaping credits correct answers with
+  # shorter <think> blocks — ~50% fewer reasoning tokens for comparable
+  # accuracy vs stock Qwen3.6-27B. No native 8-bit MLX build exists yet
+  # (checked Aug 2026); 6-bit is the highest-precision MLX quant published
+  # and the closest stand-in for this setup's usual 8-bit tier. BottleCap's
+  # own guidance is to keep the base Qwen3.6-27B sampling config unchanged.
+  # MTP drafter reuses the stock (non-ThinkingCap) Qwen3.6-27B drafter —
+  # same pattern as qwen3.6-27b/qwen3.6-moe-heretic below; draft/target
+  # fine-tune mismatch only affects acceptance rate, not correctness.
+  - name: qwen3.6-27b-thinkingcap
+    source: mlx-community/ThinkingCap-Qwen3.6-27B-mlx-6Bit
+    backend: mlx-vlm
+    mtp: true
+    thinking: true
+    lazy: true
+    memory_gb: 30  # ~22 GB weights (6-bit) + KV-cache overhead + ~1-2 GB MTP drafter
+    extra_args:
+      - "--draft-model"
+      - "mlx-community/Qwen3.6-27B-MTP-5bit"
+    defaults:
+      temperature: 1.0
+      top_p: 0.95
+      top_k: 20
+      repetition_penalty: 1.05
+      max_tokens: 16384
+
+  # ── Qwen3.8 27B dense — 8-bit ──────────────────────────────────────────────
+  # Just released (Aug 2026). Same hybrid Gated-DeltaNet/full-attention
+  # architecture as Qwen3.6-27B (only 16/64 layers full attention, the rest
+  # carry constant-size recurrent state) — a behavior/training release, not
+  # an architecture change. Qwen3.8's official card confirms the same
+  # recommended sampling values as Qwen3.6, so these are no longer carried
+  # over provisionally.
+  # Drafted by Inco's DFlash 2 block-diffusion drafter instead of the MTP head.
+  # Measured 2026-09-20 with scripts/bench_draft_variants.py on this box
+  # (5-prompt suite, 384 tokens each, APC off): 44.4 vs 36.8 decode tok/s,
+  # +37% on code boilerplate, roughly tied on free prose. The drafter binds to
+  # the target's hidden states, not its weights, so it pairs with the 8-bit
+  # target unchanged.
+  # Do NOT add --draft-block-size. mlx-vlm adapts the block size from recent
+  # acceptance; every fixed override measured slower (forcing 8 cost 12% here,
+  # and 22% with the old MTP drafter, where acceptance collapsed to 42%).
+  # `mtp: true` means "a drafter is active" — it gates the thinking_budget
+  # strip in MlxVlm.transform_request — not multi-token prediction specifically.
+  # If decode is still too slow for interactive use (dense-model bandwidth
+  # bound), fall back to a 4-bit quant of qwen3.8-27b instead.
+  - name: qwen3.8-27b
+    source: mlx-community/Qwen3.8-27B-8bit
+    backend: mlx-vlm
+    mtp: true
+    thinking: true
+    lazy: true
+    memory_gb: 41  # ~29.5 GB weights (8-bit) + KV-cache + ~3.9 GB bf16 drafter; 35.7 GB peak measured
+    extra_args:
+      - "--draft-model"
+      - "incoai/Qwen3.8-27B-DFlash2"
+      - "--draft-kind"
+      - "dflash"
+    defaults:
+      temperature: 1.0
+      top_p: 0.95
+      top_k: 20
+      repetition_penalty: 1.05
+      max_tokens: 16384
+
+  # ── Qwen3.8 27B dense — OptiQ mixed-precision, 4-bit predominant ───────────
+  # Sensitivity-aware mixed-precision quant of the same Qwen/Qwen3.8-27B base
+  # as qwen3.8-27b above: a KL-divergence sweep over a six-domain calibration
+  # mix bumps 261 sensitive layers to 8-bit and leaves 237 robust ones at
+  # 4-bit (achieved ~5.14 bpw). ~19 GB text weights + 0.9 GB bf16 vision
+  # sidecar — noticeably smaller than the plain 8-bit build, at some quality
+  # cost from the 4-bit majority.
+  # The repo ships its own optiq/mtp.safetensors, but that's only loadable
+  # through the third-party `mlx-optiq` serving tool (not something this repo
+  # depends on) — so it reuses the standalone Qwen3.8-27B-MTP-4bit drafter,
+  # same as qwen3.8-27b; draft/target quant-scheme mismatch only affects
+  # acceptance rate, not correctness.
+  - name: qwen3.8-27b-optiq
+    source: mlx-community/Qwen3.8-27B-OptiQ-4bit
+    backend: mlx-vlm
+    mtp: true
+    thinking: true
+    lazy: true
+    memory_gb: 26  # ~19 GB text (mixed 4/8-bit) + ~1 GB vision tower + KV-cache + ~2 GB MTP drafter
+    extra_args:
+      - "--draft-model"
+      - "mlx-community/Qwen3.8-27B-MTP-4bit"
+    defaults:
+      temperature: 1.0
+      top_p: 0.95
+      top_k: 20
+      repetition_penalty: 1.05
+      max_tokens: 16384
+
+  # ── Qwen3.8-Flash-Next — 125B/6B-active MoE, PLE disk-offloaded, 4-bit ──────
+  # qwen4_exp architecture: 51B-param PLE n-gram embedding table, normally
+  # resident, pushes active memory well past this box's budget. Built locally
+  # via scripts/build_ple_offload_checkpoint.py, which calls mlx-vlm's own
+  # (CLI-less) external-PLE-storage mechanism (PR #2045, merged into
+  # mlx-vlm 0.7.0rc0) against mlx-community/Qwen3.8-Flash-Next-4bit: a
+  # hard-linked view that keeps the PLE table on disk and reads rows on
+  # demand instead of loading it resident. No re-quantization involved —
+  # source checkpoint's PLE shards were already group-32/affine (qwen4_exp's
+  # own quant_predicate forces this layout on any mlx_vlm.convert run since
+  # #2045 merged). Requires mlx-vlm==0.7.0rc0 (pre-release, pinned in
+  # pyproject.toml) — ple_storage.py doesn't exist on the 0.6.x line.
+  # No mtp: — #2045's own PR description says "MTP is not qualified by this
+  # PR" (registered drafter found slower/unreliable with PLE offload active).
+  - name: qwen3.8-flash-next-ple
+    source: ~/.cache/mlx-vlm/qwen3.8-flash-next-ple-offload  # local path from scripts/build_ple_offload_checkpoint.py
+    backend: mlx-vlm
+    thinking: true
+    lazy: true
+    memory_gb: 82  # ~78.46 GB peak Metal per mlx-vlm's #2045 benchmark (M2 Ultra
+                   # 128GB, 21,646-token request) + margin. Re-check against
+                   # `mlx memory` after the first real run on this hardware.
+    defaults:
+      temperature: 1.0
+      top_p: 0.95
+      top_k: 20
+      repetition_penalty: 1.0
+      max_tokens: 16384
+
+  # ── Gemma 4 31B dense ──────────────────────────────────────────────────────
+  # z-lab DFlash is NOT suitable here — it targets non-QAT google/gemma-4-31B-it.
+  - name: gemma4-31b
+    source: mlx-community/gemma-4-31B-it-qat-mxfp4
+    backend: mlx-vlm
+    thinking: true
+    lazy: true
+    memory_gb: 36  # ~28.5 GB weights (QAT mxfp4) + KV-cache + ~250 MB QAT assistant drafter
+    extra_args:
+      - "--draft-model"
+      - "mlx-community/gemma-4-31B-it-qat-assistant-mxfp4"
+    defaults:
+      temperature: 0.9
+      top_p: 0.95
+      top_k: 64
+      repetition_penalty: 1.05
+      max_tokens: 16384
+
+  # ── Gemma 4 MoE E4B — QAT (smaller, ~2B active) ────────────────────────
+  - name: gemma4-e4b-qat
+    source: mlx-community/gemma-4-E4B-it-qat-4bit
+    backend: mlx-lm
+    multimodal: true  # served by mlx-lm but accepts image_url content
+    memory_gb: 8  # ~3-4 GB weights (E4B ~2B active, 4-bit) + overhead
+    defaults:
+      temperature: 0.9
+      top_p: 0.95
+      top_k: 64
+      repetition_penalty: 1.0
+      max_tokens: 16384
+
+  # ── Qwen3.6 MoE 35B-A3B — Heretic (Abliterated) 8-bit ───────────────────────
+  # Uncensored abliteration of Qwen3.6-35B-A3B at 8-bit quality.
+  # External MTP drafter (same weights as qwen3.6-moe-8bit) for ~1.5-2x throughput.
+  # thinking_budget incompatible with MTP; max_tokens is the backstop.
+  - name: qwen3.6-moe-heretic
+    source: froggeric/Qwen3.6-35B-A3B-Uncensored-Heretic-MLX-8bit
+    backend: mlx-vlm
+    mtp: true
+    thinking: true
+    lazy: true
+    memory_gb: 41  # ~35 GB weights (8-bit MoE) + KV-cache + ~1 GB MTP drafter
+    extra_args:
+      - "--draft-model"
+      - "mlx-community/Qwen3.6-35B-A3B-MTP-5bit"
+    defaults:
+      temperature: 0.7
+      top_p: 0.9
+      top_k: 40
+      min_p: 0.1
+      repetition_penalty: 1.05
+      max_tokens: 16384
+
+  # ── Gemma 4 MoE 26B-A4B — QAT 8-bit ──────────────────────────────────
+  # Higher precision reduces quantisation-artifact amplification of the
+  # repetition-collapse bug. Uses ~26 GB vs ~13 GB for nvfp4.
+  # QAT assistant drafter (8-bit, ~100 MB) — QAT-trained, same release batch as base.
+  - name: gemma4-moe-qat-8bit
+    source: mlx-community/gemma-4-26B-A4B-it-qat-8bit
+    backend: mlx-vlm
+    thinking: true
+    lazy: true
+    memory_gb: 38  # ~26 GB weights (QAT 8-bit MoE) + KV-cache + ~100 MB QAT 8-bit drafter
+    extra_args:
+      - "--draft-model"
+      - "mlx-community/gemma-4-26B-A4B-it-qat-assistant-8bit"
+    defaults:
+      temperature: 0.9
+      top_p: 0.95
+      top_k: 64
+      repetition_penalty: 1.0
+      max_tokens: 16384
+
+  # ── Qwen3-VL 8B Instruct — abliterated (uncensored), 8-bit ──────────────
+  - name: qwen3-vl-abl
+    source: alexgusevski/Huihui-Qwen3-VL-8B-Instruct-abliterated-q8-mlx
+    backend: mlx-vlm
+    lazy: true
+    memory_gb: 13  # ~9.2 GB weights (8-bit) + vision encoder + image-token KV cache
+    defaults:
+      temperature: 0.7
+      top_p: 0.8
+      top_k: 20
+      repetition_penalty: 1.0
+      max_tokens: 4096
+
+  # ── Audio — TTS (Text-to-Speech) ─────────────────────────────────────────
+  # Kokoro-82M: 54 voices, ~600 MB weights. Fast, high quality.
+  # Install once: mlx install audio
+  #
+  # Example request:
+  #   curl -X POST http://localhost:6300/v1/audio/speech \
+  #     -H "Content-Type: application/json" \
+  #     -d '{"model":"kokoro","input":"Hello world","voice":"af_heart"}' \
+  #     --output speech.mp3
+  #
+  # - name: kokoro
+  #   source: mlx-community/Kokoro-82M-bf16
+  #   backend: mlx-audio
+  #   memory_gb: 1
+  #   lazy: true
+
+  # ── Audio — STT (Speech-to-Text) ─────────────────────────────────────────
+  # Whisper large-v3: ~3.1 GB, 99-language support. Install: mlx install audio
+  # Whisper large-v3-turbo: same encoder, pruned decoder (4 vs 32 layers) —
+  # faster, marginally less accurate. Both installed under the same env.
+  #
+  # Must be an "-asr-*" (or "-fp16"/"-4bit"/"-8bit") repo — the older
+  # "-mlx"-suffixed conversions (e.g. whisper-large-v3-mlx) ship only
+  # weights.npz + config.json with no HF processor/tokenizer files, which
+  # makes mlx-audio's current Whisper loader fail with "Processor not found".
+  #
+  # Example request:
+  #   curl -X POST http://localhost:6300/v1/audio/transcriptions \
+  #     -F "model=whisper-large" -F "file=@audio.mp3"
+
+  - name: whisper-large
+    source: mlx-community/whisper-large-v3-asr-fp16
+    backend: mlx-audio
+    memory_gb: 4
+    lazy: true
+    extra_args: ["--type", "stt"]
+
+  - name: whisper-turbo
+    source: mlx-community/whisper-large-v3-turbo-asr-fp16
+    backend: mlx-audio
+    memory_gb: 2
+    lazy: true
+    extra_args: ["--type", "stt"]
+
+
+  # ── Image — FLUX.2-klein-base-9B (undistilled) ───────────────────────────
+  # Undistilled base variant. Suited for LoRA training targets and research.
+  # mflux downloads from black-forest-labs/FLUX.2-klein-base-9B on first start.
+  # steps: range 1–50; 28 = quality/speed balance, 50 = max quality (BFL example)
+  # guidance_scale: range 1–20; 3.5–4.0 recommended (BFL example: 4.0)
+      
+  - name: flux2-klein-base-9b
+    source: flux2-klein-base-9b
+    backend: mflux2
+    memory_gb: 22
+    lazy: true
+    extra_args:
+      - "--quantize"
+      - "8"
+    defaults:
+      steps: 28
+      guidance_scale: 4.0
+      width: 1024
+      height: 1024
+
+  - name: flux2-klein-hifi-plain
+    source: flux2-klein-9b
+    backend: mflux2
+    memory_gb: 22
+    lazy: true
+    extra_args:
+      - "--quantize"
+      - "8"
+    defaults:
+      steps: 8
+      width: 1024
+      height: 1024
+
+  # ── Image — FLUX.2-klein-9B  ───────────────────────────
+  # FLUX non-commercial license, 9B params, 4-step distilled. ~18 GB at 8-bit.
+  # mflux downloads from black-forest-labs/FLUX.2-klein-9B on first start (~32 GB).
+  # For abliterated T5 text encoder: run scripts/setup_flux2.py, then set source
+  - name: flux2-klein-hifi
+    source: flux2-klein-9b
+    backend: mflux2
+    memory_gb: 22
+    lazy: true
+    extra_args:
+      - "--quantize"
+      - "8"
+    defaults:
+      steps: 4
+      width: 1024
+      height: 1024
+
+
+  # ── Image — Ideogram 4 ────────────────────────────────────────────────────
+  # Ideogram-ai's state-of-the-art model (~14 GB fp8 weights).
+  # mflux downloads from ideogram-ai/ideogram-4-fp8 on first start.
+  # To use the pre-quantized community model (MLXBits/ideogram-4-mlx-q8):
+  #   1. huggingface-cli download MLXBits/ideogram-4-mlx-q8 \
+  #        --local-dir ~/.local/share/mlx/models/ideogram-4-q8
+  #   2. Add to extra_args: ["--model-path", "~/.local/share/mlx/models/ideogram-4-q8"]
+  #      (omit --quantize; model is already quantized)
+  #
+  # steps=20 → V4_DEFAULT_20 preset (variable guidance schedule, recommended)
+  # steps=12 → V4_TURBO_12  (fastest)
+  # steps=48 → V4_QUALITY_48 (highest quality)
+  # Override per-request with steps=N or preset=V4_TURBO_12|V4_DEFAULT_20|V4_QUALITY_48
+  #
+  # LoRA: add --lora-paths and --lora-scales to extra_args (same as mflux2).
+  #   mflux supports local .safetensors and HuggingFace repo/collection formats.
+  #
+  # Example request:
+  #   curl -X POST http://localhost:6300/v1/images/generations \
+  #     -H "Content-Type: application/json" \
+  #     -d '{"model":"ideogram-4","prompt":"a photorealistic red cat on a rooftop at sunset"}' \
+  #     | python3 -c "import sys,json,base64; open('out.png','wb').write(base64.b64decode(json.load(sys.stdin)['data'][0]['b64_json']))"
+  - name: ideogram-4
+    source: ideogram4
+    backend: mflux-ideogram
+    memory_gb: 14
+    lazy: true
+    extra_args: []
+    defaults:
+      steps: 20
+      width: 1024
+      height: 1024
+

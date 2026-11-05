@@ -199,10 +199,10 @@ def verify_output(source_dir: Path, target_dir: Path) -> None:
         '--prompt "What is 2+2? Answer with just the number." --max-tokens 10'
     )
     print("     Confirm it outputs 4, not garbage.")
-    print("  2. Add an entry to config/models.yaml pointing source: at:")
+    print("  2. Add an entry to ~/.config/mlx/models.yaml pointing source: at:")
     print(f"       {target_dir}")
     print("     (see the qwen3.8-flash-next-ple template already discussed)")
-    print("  3. cp config/models.yaml ~/.config/mlx/models.yaml && mlx stop && mlx start")
+    print("  3. cp config/models.example.yaml ~/.config/mlx/models.yaml && mlx stop && mlx start")
 
 
 def main() -> None:

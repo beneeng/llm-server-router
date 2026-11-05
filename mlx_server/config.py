@@ -148,7 +148,7 @@ def load_config(path: Path = CONFIG_PATH) -> ServerConfig:
     if not path.exists():
         raise FileNotFoundError(
             f"Config not found at {path}. "
-            "Run: mkdir -p ~/.config/mlx && cp config/models.yaml ~/.config/mlx/models.yaml"
+            "Run: mkdir -p ~/.config/mlx && cp config/models.example.yaml ~/.config/mlx/models.yaml"
         )
     raw = yaml.safe_load(path.read_text())
     server_raw = raw.get("server", {})

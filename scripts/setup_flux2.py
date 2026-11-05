@@ -9,7 +9,7 @@ What this does:
   4. Merges the abliterated encoder into the pre-cached 9B model snapshot
   5. Prints Civitai LoRA download instructions
 
-After running this script, update config/models.yaml as instructed in the output.
+After running this script, update ~/.config/mlx/models.yaml as instructed in the output.
 
 Usage:
   python scripts/setup_flux2.py                # full setup
@@ -215,7 +215,7 @@ def print_yaml_instructions(only_4b: bool) -> None:
             lines.append(f"  flux2-klein-hifi  →  source: {MODEL_9B_DIR}")
 
     if lines:
-        print("Update config/models.yaml source: fields to skip HF download on cold start:\n")
+        print("Update ~/.config/mlx/models.yaml source: fields to skip HF download on cold start:\n")
         for line in lines:
             print(f"  {line}")
     else:
@@ -256,7 +256,7 @@ def main() -> None:
     print("\n=== Done ===")
     print("Next steps:")
     print("  1. Download LoRA from Civitai (see above)")
-    print("  2. Update config/models.yaml with LoRA path (and optional pre-cached source)")
+    print("  2. Update ~/.config/mlx/models.yaml with LoRA path (and optional pre-cached source)")
     print("  3. mlx start --model flux2-klein-fast")
     print("  4. mlx start --model flux2-klein-hifi")
 

@@ -81,7 +81,7 @@ path from `~/.cache/mlx-mtp/qwen3.6-moe-mxfp4` instead.
 manually unless auto-detection fails.
 
 Also mirror these changes into the repo copy at
-`~/workspace/local_llm/config/models.yaml`.
+`config/models.example.yaml`.
 
 ### Step 3 — Restart
 

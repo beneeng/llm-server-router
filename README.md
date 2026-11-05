@@ -35,7 +35,7 @@ dependencies conflict with the LLM stack; these are auto-provisioned on first us
 uv tool install -e . --python 3.12 --prerelease allow
 
 # 2. Copy config template
-mkdir -p ~/.config/mlx && cp config/models.yaml ~/.config/mlx/models.yaml
+mkdir -p ~/.config/mlx && cp config/models.example.yaml ~/.config/mlx/models.yaml
 
 # 3. Start
 mlx start

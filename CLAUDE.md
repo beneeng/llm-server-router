@@ -14,7 +14,7 @@ This installs the `mlx` CLI globally into a uv-managed venv at `~/.local/share/u
 
 One-time config setup:
 ```bash
-mkdir -p ~/.config/mlx && cp config/models.yaml ~/.config/mlx/models.yaml
+mkdir -p ~/.config/mlx && cp config/models.example.yaml ~/.config/mlx/models.yaml
 ```
 
 **Optional backends** (audio, image, …) run in separate isolated venvs because they

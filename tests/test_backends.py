@@ -197,3 +197,24 @@ def test_source_tilde_is_expanded():
 def test_source_hf_repo_id_untouched():
     cfg = ModelConfig(name="x", source="org/model", backend="mlx-vlm")
     assert cfg.source == "org/model"
+
+
+def test_mlx_vlm_reasoning_effort_map_rewrites_listed_value():
+    m = ModelConfig(name="m", source="s", backend="mlx-vlm", reasoning_effort_map={"high": "xhigh"})
+    body = {"reasoning_effort": "high"}
+    m.resolve_backend().transform_request(body, m)
+    assert body["reasoning_effort"] == "xhigh"
+
+
+def test_mlx_vlm_reasoning_effort_passthrough_without_map():
+    m = ModelConfig(name="m", source="s", backend="mlx-vlm")
+    body = {"reasoning_effort": "high"}
+    m.resolve_backend().transform_request(body, m)
+    assert body["reasoning_effort"] == "high"
+
+
+def test_mlx_vlm_reasoning_effort_map_leaves_unlisted_value():
+    m = ModelConfig(name="m", source="s", backend="mlx-vlm", reasoning_effort_map={"high": "xhigh"})
+    body = {"reasoning_effort": "low"}
+    m.resolve_backend().transform_request(body, m)
+    assert body["reasoning_effort"] == "low"

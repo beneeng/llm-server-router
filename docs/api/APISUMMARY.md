@@ -26,6 +26,7 @@ curl -X POST http://localhost:6300/v1/chat/completions \
 | `messages` | Standard OpenAI format; image URLs for VLMs |
 | `stream` | `true` → SSE `data: ...\n\n` |
 | `thinking_token_budget` | Router renames to `thinking_budget` for mlx-vlm; stripped for MTP models |
+| `reasoning_effort` | Forwarded as-is, except per-model `reasoning_effort_map` (config) rewrites listed values for mlx-vlm models, e.g. `high` → `xhigh` for Qwen3.8 whose template rejects `high` |
 | `enable_thinking` | Router moves into `chat_template_kwargs` for mlx-lm; native for mlx-vlm and `mlx-vlm-dsv4` (selects `<think>` vs `</think>` mode) |
 | `tools` | OpenAI function tools. For `mlx-vlm-dsv4` (DeepSeek-V4) the router adds `tool_parser: deepseek_v4_dsml` unless the caller sets one |
 

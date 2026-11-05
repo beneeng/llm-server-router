@@ -760,8 +760,11 @@ components:
             `tools` are present.
         reasoning_effort:
           type: string
-          enum: [high, max]
-          description: Forwarded to DeepSeek-V4's encoder (mlx-vlm-dsv4 only); other values are ignored.
+          description: >
+            Forwarded to the chat template.  DeepSeek-V4 (mlx-vlm-dsv4) takes `high|max`.
+            For mlx-vlm models with a `reasoning_effort_map` in config the router rewrites
+            listed values first (e.g. `high` becomes `xhigh` for Qwen3.8, whose template
+            accepts only `xhigh|medium|low`).
         tool_choice:
           oneOf:
             - type: string

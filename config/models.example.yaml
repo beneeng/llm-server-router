@@ -185,6 +185,8 @@ models:
     source: ~/.cache/mlx-vlm/qwen3.8-flash-next-ple-offload  # local path from scripts/build_ple_offload_checkpoint.py
     backend: mlx-vlm
     thinking: true
+    # Template accepts only xhigh/medium/low; opencode sends "high".
+    reasoning_effort_map: {high: xhigh}
     lazy: true
     memory_gb: 82  # ~78.46 GB peak Metal per mlx-vlm's #2045 benchmark (M2 Ultra
                    # 128GB, 21,646-token request) + margin. Re-check against

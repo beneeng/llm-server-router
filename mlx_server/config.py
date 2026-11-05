@@ -61,6 +61,11 @@ class ModelConfig(BaseModel):
     # control. Set only for models that support thinking mode (Qwen3). Gemma4 emits
     # <|channel>thought tokens by default when this flag is present.
     thinking: bool = False
+    # Rewrites the request's `reasoning_effort` per model, e.g. {high: xhigh}.
+    # For chat templates that accept only a fixed set of effort names (Qwen3.8
+    # takes xhigh/medium/low and raises on the OpenAI-style "high" that clients
+    # such as opencode send). Values not in the map pass through unchanged.
+    reasoning_effort_map: dict[str, str] = {}
     # When True, mlx start skips this model; it is started on the first request
     # via MemoryManager.ensure_model_ready().  mlx start --model NAME ignores
     # this flag and starts the model explicitly regardless.

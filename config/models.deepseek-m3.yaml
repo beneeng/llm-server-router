@@ -23,7 +23,7 @@ models:
     source: mlx-community/DeepSeek-V4-Flash-4bit
     backend: mlx-vlm-dsv4  # text-only; image content is rejected with 400 at the router
     thinking: true         # default <think> mode; override per request with enable_thinking
-    lazy: false            # only model on this machine, start with `mlx start`
+    lazy: true            # only model on this machine, start with `mlx start`
     memory_gb: 165         # 151 GB weights + KV cache / overhead
     defaults:
       # DeepSeek's model card: "for local deployment ... temperature = 1.0, top_p = 1.0".

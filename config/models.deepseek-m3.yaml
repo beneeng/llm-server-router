@@ -9,6 +9,19 @@
 # backend replaces it with DeepSeek's reference encoder and adds a DSML
 # tool-call parser (see mlx_server/mlx_vlm_dsv4_wrapper.py), so tools, tool
 # results and thinking work through /v1/chat/completions.
+#
+# Qwen3.8-Flash-Next (125B / 6B active MoE, qwen4_exp) runs on the plain
+# `mlx-vlm` backend with the 4-bit checkpoint fully resident: the 51B-param PLE
+# n-gram table stays in RAM, no disk offload and no scripts/build_ple_offload_checkpoint.py.
+# Both models do not fit together (165 + 125 GB > 200 GB budget), so the memory
+# manager evicts one when the other is requested. Both are lazy.
+# Needs mlx-vlm >= 0.7.12 and MUST NOT run on 0.7.0: on the M5 Max the same
+# checkpoint decoded ~34 tok/s on 0.7.0 and ~54 tok/s on 0.7.12.
+# After `git pull` run `uv tool install -e . --python 3.12 --reinstall` here and
+# check `~/.local/share/uv/tools/mlx-server/bin/python -c "import mlx_vlm; print(mlx_vlm.__version__)"`.
+# All Flash-Next numbers in the comments below were measured on the M5 Max, not
+# on this machine. Re-measure here with scripts/bench_draft_variants.py before
+# trusting any of them.
 
 server:
   host: 127.0.0.1
@@ -30,3 +43,61 @@ models:
       temperature: 1.0
       top_p: 1.0
       max_tokens: 16384
+
+  # ── Qwen3.8-Flash-Next - 4-bit, PLE table resident (no offload) ───────────
+  # mlx-community's plain conversion (~112 GB on disk, group-32 affine PLE
+  # shards, 4-bit experts, 8-bit gates). First start downloads it from HF.
+  # Check the real size with `du -sh` after the download and adjust memory_gb.
+  - name: qwen3.8-flash-next
+    source: mlx-community/Qwen3.8-Flash-Next-4bit
+    backend: mlx-vlm
+    thinking: true
+    lazy: true
+    # ~112 GB weights, all resident (the M5 Max run with the table offloaded
+    # peaked at 82.9 GB at 24k context; the offloaded part is what is resident
+    # here) + KV cache + activations. Re-check with `mlx memory` after the
+    # first long request.
+    memory_gb: 125
+    # No drafter on purpose. On the M5 Max the MTP drafter was +23% on short
+    # prompts but SLOWER from ~8k context up (41 vs 47 tok/s at 8k, 34 vs 44 at
+    # 24k), because stock mlx-vlm verifies qwen4_exp blocks on a slow generic
+    # path. The M3 has lower compute, so verification is likely no cheaper.
+    # To test it anyway (needs `mtp: true`, which only gates the thinking_budget
+    # strip in the router):
+    #   mtp: true
+    #   extra_args:
+    #     - "--draft-model"
+    #     - "sh0wie/Qwen3.8-Flash-Next-MTP-Drafter-MLX-bf16"
+    #     - "--draft-kind"
+    #     - "mtp"
+    # Do NOT add --draft-block-size; forcing 3 or 6 measured no better than the
+    # adaptive default. Benchmark with --long-context 8000 --long-context 24000
+    # and judge by the long-context rows. See TODO.md for the open speed levers.
+    defaults:
+      # Qwen's recommended sampling for Qwen3.8, same as on the M5 Max.
+      temperature: 1.0
+      top_p: 0.95
+      top_k: 20
+      repetition_penalty: 1.0
+      max_tokens: 16384
+
+  # ── Optional: higher precision ─────────────────────────────────────────────
+  # 4-bit is the sensible default (HumanEval 93.9% on the unpruned 4-bit build
+  # per a community card). With 256 GB an 8-bit build can fit when it is the only
+  # model loaded, but it is untested here: the published 8-bit conversions
+  # (e.g. ToPo-ToPo/Qwen3.8-Flash-Next-mlx-8bit) are roughly 170 GB, which leaves
+  # little KV headroom under max_total_memory_gb: 200 and decodes slower because
+  # a bandwidth-bound MoE reads more bytes per token. Verify the checkpoint size
+  # and that mlx-vlm 0.7.12 loads it before enabling.
+  # - name: qwen3.8-flash-next-8bit
+  #   source: ToPo-ToPo/Qwen3.8-Flash-Next-mlx-8bit
+  #   backend: mlx-vlm
+  #   thinking: true
+  #   lazy: true
+  #   memory_gb: 185
+  #   defaults:
+  #     temperature: 1.0
+  #     top_p: 0.95
+  #     top_k: 20
+  #     repetition_penalty: 1.0
+  #     max_tokens: 16384

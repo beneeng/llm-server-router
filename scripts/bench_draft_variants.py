@@ -30,6 +30,7 @@ import time
 from pathlib import Path
 
 import httpx
+import psutil
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -67,10 +68,40 @@ def _stop(proc: subprocess.Popen) -> None:
         proc.wait(timeout=10)
 
 
+MAX_SWAP_USED_GB = 3.0
+GUARD_WAIT_SECONDS = 90.0  # macOS releases a stopped backend's memory with a delay
+
+
+def memory_guard(model_cfg, min_free_gb: float) -> str | None:
+    """Return a reason to refuse starting the backend, or None when it is safe.
+
+    This script bypasses the router's MemoryManager, so it needs its own floor:
+    a model that does not fit pushes the machine into swap and freezes it.
+    """
+    available = psutil.virtual_memory().available / 2**30
+    swap_used = psutil.swap_memory().used / 2**30
+    if swap_used > MAX_SWAP_USED_GB:
+        return f"swap already {swap_used:.1f} GB used (limit {MAX_SWAP_USED_GB:.0f}); reboot or free memory first"
+    if available - model_cfg.memory_gb < min_free_gb:
+        return (f"{available:.1f} GB available - {model_cfg.memory_gb} GB model "
+                f"would leave less than {min_free_gb:.0f} GB free")
+    return None
+
+
 def run_variant(model_cfg, label: str, extra: list[str], args: argparse.Namespace) -> dict | None:
+    deadline = time.time() + GUARD_WAIT_SECONDS
+    refusal = memory_guard(model_cfg, args.min_free_gb)
+    while refusal and time.time() < deadline:
+        time.sleep(5.0)
+        refusal = memory_guard(model_cfg, args.min_free_gb)
+    if refusal:
+        print(f"\n=== {label} === REFUSED: {refusal}", file=sys.stderr)
+        return None
     argv = model_cfg.server_args()
     port_idx = argv.index("--port")
     argv[port_idx + 1] = str(args.port)
+    if args.python:
+        argv[0] = args.python  # benchmark another mlx-vlm version without touching the tool venv
     argv += extra
 
     env = os.environ | model_cfg.resolve_backend().env_vars(model_cfg)
@@ -95,6 +126,7 @@ def run_variant(model_cfg, label: str, extra: list[str], args: argparse.Namespac
                 max_tokens=args.max_tokens,
                 repeat=args.repeat,
                 timeout=args.request_timeout,
+                long_context=args.long_context,
                 out=args.out,
             )
             bench.run(bench_args)
@@ -118,7 +150,10 @@ def main() -> int:
         help="repeatable; extra flags appended to the configured argv",
     )
     parser.add_argument("--port", type=int, default=6399, help="bench port, kept clear of the 6301+ block")
+    parser.add_argument("--python", help="interpreter for the backend (e.g. an isolated venv with another mlx-vlm)")
     parser.add_argument("--max-tokens", type=int, default=384)
+    parser.add_argument("--long-context", type=int, action="append", metavar="TOKENS",
+                        help="also run a ~TOKENS-token prompt built from this repo's source; repeatable")
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--startup-timeout", type=float, default=900.0,
                         help="raise this when a variant has to download a drafter first")
@@ -127,6 +162,7 @@ def main() -> int:
     args = parser.parse_args()
 
     cfg = load_config()
+    args.min_free_gb = cfg.min_free_memory_gb
     matches = [m for m in cfg.models if m.name == args.model]
     if not matches:
         print(f"unknown model {args.model!r}; known: {', '.join(m.name for m in cfg.models)}", file=sys.stderr)

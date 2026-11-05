@@ -75,6 +75,26 @@ SAMPLING = {
 }
 
 
+def long_prompt(approx_tokens: int) -> str:
+    """Build a prompt of roughly `approx_tokens` tokens from this repo's own source.
+
+    Real code (not repeated filler) so the drafter faces realistic text. ~3.5
+    chars per token is an estimate; the actual count is in the response usage.
+    """
+    root = Path(__file__).resolve().parent.parent
+    chunks: list[str] = []
+    size = 0
+    budget = int(approx_tokens * 3.5)
+    for path in sorted(root.glob("mlx_server/**/*.py")) + sorted(root.glob("scripts/*.py")):
+        text = path.read_text(errors="ignore")
+        chunks.append(f"### {path.relative_to(root)}\n{text}")
+        size += len(text)
+        if size >= budget:
+            break
+    body = "\n\n".join(chunks)[:budget]
+    return body + "\n\nSummarize what the code above does in four sentences."
+
+
 def _post(client: httpx.Client, base: str, model: str, prompt: str, max_tokens: int) -> dict:
     body = {
         "model": model,
@@ -170,8 +190,11 @@ def run(args: argparse.Namespace) -> int:
         print(f"[{args.label}] warmup...", file=sys.stderr)
         _post(client, base, args.model, "Say OK.", 16)
 
+        prompts = list(PROMPTS) + [
+            (f"long-{n}", long_prompt(n)) for n in (getattr(args, "long_context", None) or [])
+        ]
         for repeat in range(args.repeat):
-            for prompt_id, prompt in PROMPTS:
+            for prompt_id, prompt in prompts:
                 data = _post(client, base, args.model, prompt, args.max_tokens)
                 row = _row(prompt_id, data)
                 row["repeat"] = repeat
@@ -217,6 +240,8 @@ def main() -> int:
     parser.add_argument("--label", default="run", help="name for this variant in the output")
     parser.add_argument("--max-tokens", type=int, default=384)
     parser.add_argument("--repeat", type=int, default=1, help="passes over the prompt suite")
+    parser.add_argument("--long-context", type=int, action="append", metavar="TOKENS",
+                        help="also run a prompt of ~TOKENS tokens built from this repo's source; repeatable")
     parser.add_argument("--timeout", type=float, default=600.0)
     parser.add_argument("--out", help="append the result as JSON to this file")
     parser.add_argument("--compare", type=Path, help="print a table of everything in this file and exit")

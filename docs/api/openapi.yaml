@@ -35,6 +35,9 @@ info:
     - mlx_server/mlx_lm_wrapper.py
     - mlx_server/mlx_vlm_wrapper.py
     - mlx_server/config.py
+    - mlx_server/dashboard.py
+    - mlx_server/metrics_store.py
+    - mlx_server/metrics_poller.py
 
 servers:
   - url: http://localhost:6300
@@ -139,6 +142,195 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/ApiError"
+
+  # ────────────────────── Dashboard (read-only, GET only) ──────────────────────
+  # Numbers and settings only. Prompts and responses are never stored or shown:
+  # request metrics come from the mlx-vlm backends' own content-free `/v1/metrics`
+  # and are kept in SQLite (~/.local/share/mlx/metrics.db) across restarts.
+  # No authentication: the router listens on 127.0.0.1 by default.
+  # All of these return 404 unless `dashboard_enabled: true` (opt-in, default false).
+
+  /_dashboard/:
+    get:
+      operationId: dashboardPage
+      summary: Dashboard web UI
+      description: Single static HTML page (no external requests) that polls the JSON endpoints below.
+      tags: [Dashboard]
+      responses:
+        "200":
+          description: HTML page
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /_dashboard/api/overview:
+    get:
+      operationId: dashboardOverview
+      summary: Models, live status, memory, request counts
+      tags: [Dashboard]
+      responses:
+        "200":
+          description: Overview
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  uptime_s: {type: number}
+                  models:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: {type: string}
+                        backend: {type: string}
+                        modality: {type: string}
+                        alive: {type: boolean}
+                        rss_gb: {type: number, description: "Physical footprint of the running backend"}
+                        memory_gb: {type: [number, "null"], description: "Configured budget"}
+                        port: {type: integer}
+                        lazy: {type: boolean}
+                        protected: {type: boolean}
+                        apc_bytes: {type: integer, description: "On-disk prompt cache size (cached 60 s)"}
+                  memory:
+                    type: object
+                    properties:
+                      used_gb: {type: number}
+                      cap_gb: {type: [number, "null"]}
+                      free_gb: {type: number}
+                  router_counts:
+                    type: array
+                    description: POST requests proxied per model (all backends), with errors (backend down or HTTP >= 400)
+                    items:
+                      type: object
+                      properties:
+                        model: {type: string}
+                        requests: {type: integer}
+                        errors: {type: integer}
+
+  /_dashboard/api/config:
+    get:
+      operationId: dashboardConfig
+      summary: Redacted settings
+      description: >
+        Server limits and per-model settings. The user's home directory is
+        replaced with `~` in every string so a local path does not reveal the
+        account name.
+      tags: [Dashboard]
+      responses:
+        "200":
+          description: Settings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  server: {type: object, additionalProperties: true}
+                  models:
+                    type: array
+                    items: {type: object, additionalProperties: true}
+
+  /_dashboard/api/requests:
+    get:
+      operationId: dashboardRequests
+      summary: Most recent requests (numbers only), newest first
+      description: >
+        mlx-vlm backends only (mlx-lm, audio and image backends expose no
+        per-request metrics). `prefill_tok_s` counts cached prompt tokens too,
+        so it is inflated on prompt-cache hits.
+      tags: [Dashboard]
+      parameters:
+        - {name: model, in: query, schema: {type: string}, description: "Router alias"}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, default: 100}, description: "Clamped to 5000"}
+      responses:
+        "200":
+          description: Rows
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requests:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        model: {type: string, description: "Router alias"}
+                        drafter: {type: [string, "null"], description: "Speculative drafter kind from config"}
+                        ts: {type: number, description: "Unix seconds"}
+                        endpoint: {type: [string, "null"]}
+                        stream: {type: [integer, "null"]}
+                        prompt_tokens: {type: [integer, "null"]}
+                        completion_tokens: {type: [integer, "null"]}
+                        generated_tokens: {type: [integer, "null"]}
+                        reasoning_tokens: {type: [integer, "null"]}
+                        prefill_tok_s: {type: [number, "null"]}
+                        decode_tok_s: {type: [number, "null"]}
+                        ttft_s: {type: [number, "null"]}
+                        request_elapsed_s: {type: [number, "null"]}
+                        decode_elapsed_s: {type: [number, "null"]}
+                        peak_memory_gb: {type: [number, "null"]}
+                        finish_reason: {type: [string, "null"]}
+                        thinking: {type: [integer, "null"]}
+                        tool_calls: {type: [integer, "null"]}
+                        apc_enabled: {type: [integer, "null"]}
+        "422":
+          description: Invalid `limit`
+
+  /_dashboard/api/stats:
+    get:
+      operationId: dashboardStats
+      summary: Prefill/decode speed percentiles by prompt size
+      description: >
+        Buckets: `<2k`, `2k-8k`, `8k-32k`, `32k+` prompt tokens. Decode speed
+        falls with context, so one overall average would hide the signal.
+      tags: [Dashboard]
+      parameters:
+        - {name: model, in: query, schema: {type: string}}
+        - {name: hours, in: query, schema: {type: number, exclusiveMinimum: 0}, description: "Only requests from the last N hours"}
+      responses:
+        "200":
+          description: Statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requests: {type: integer}
+                  buckets:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        bucket: {type: string}
+                        requests: {type: integer}
+                        prefill_p50: {type: [number, "null"]}
+                        prefill_p90: {type: [number, "null"]}
+                        decode_p50: {type: [number, "null"]}
+                        decode_p90: {type: [number, "null"]}
+                        ttft_p50: {type: [number, "null"]}
+
+  /_dashboard/api/cache/{name}:
+    get:
+      operationId: dashboardCache
+      summary: Prompt-cache counters of a running model
+      description: Proxies the backend's `/v1/cache/stats`, keeping numeric and boolean values only.
+      tags: [Dashboard]
+      parameters:
+        - {name: name, in: path, required: true, schema: {type: string}}
+      responses:
+        "200":
+          description: "`{running: false}` when stopped; `stats` is null if the backend did not answer"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  running: {type: boolean}
+                  stats: {type: [object, "null"], additionalProperties: true}
+        "404":
+          description: Unknown model
 
   # ────────────────────── Chat Completions (LLM / VLM) ──────────────────────
 

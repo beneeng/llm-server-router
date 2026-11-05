@@ -122,6 +122,11 @@ class ServerConfig(BaseModel):
     # finish in time, it is force-stopped anyway so memory pressure can't
     # deadlock the system indefinitely.
     evict_wait_timeout_seconds: float = 300.0
+    # Opt-in (default off). Read-only technical dashboard at /_dashboard/ (numbers only, never prompts
+    # or responses). Per-request metrics are kept in a SQLite file under
+    # ~/.local/share/mlx/ and survive restarts; the newest N rows are retained.
+    dashboard_enabled: bool = False
+    metrics_retention_rows: int = 50_000
     models: list[ModelConfig] = []
 
     @model_validator(mode="after")

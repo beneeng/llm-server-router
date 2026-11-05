@@ -44,12 +44,17 @@ def _backend_unavailable(model_name: str, port: int) -> JSONResponse:
 
 from .apc_gc import start_background_gc
 from .config import ServerConfig, load_config
+from .dashboard import build_router as _build_dashboard_router
 from .keepawake import touch as _touch_keepawake
+from .manager import STATE_DIR
 from .memory import MemoryManager
+from .metrics_poller import poll_model, start_background_poller
+from .metrics_store import MetricsStore
 
 # Loaded once at startup; re-read the file on SIGHUP if you want hot reload.
 _cfg: ServerConfig | None = None
 _mem: MemoryManager | None = None
+_store: MetricsStore | None = None
 
 
 def _config() -> ServerConfig:
@@ -63,17 +68,40 @@ def _memory_manager() -> MemoryManager:
     global _mem
     if _mem is None:
         _mem = MemoryManager(_config())
+        # Last look at a backend's per-request metrics before it is evicted.
+        _mem.before_stop = lambda name: poll_model(_config(), _metrics_store(), name)
     return _mem
+
+
+def _metrics_store() -> MetricsStore:
+    global _store
+    if _store is None:
+        _store = MetricsStore(STATE_DIR / "metrics.db", _config().metrics_retention_rows)
+    return _store
+
+
+def _count(model_name: str, error: bool = False) -> None:
+    """Tally a proxied request for the dashboard. Never allowed to break the proxy."""
+    try:
+        if _config().dashboard_enabled:
+            store = _metrics_store()
+            (store.count_error if error else store.count_request)(model_name)
+    except Exception:
+        pass
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _memory_manager()  # create asyncio.Lock on the running event loop
     start_background_gc()  # hourly sweep of APC shards older than 48h
+    if _config().dashboard_enabled:
+        start_background_poller(_config(), _metrics_store())  # per-request speeds -> SQLite
     yield
 
 
 app = FastAPI(lifespan=lifespan)
+# Mounted before the catch-all proxy route below, so /_dashboard/* is never read as a model.
+app.include_router(_build_dashboard_router(_config, _metrics_store, _memory_manager))
 
 
 # ── /v1/models ────────────────────────────────────────────────────────────────
@@ -193,6 +221,8 @@ async def proxy(path: str, request: Request) -> Response:
     # eviction logic in MemoryManager can wait for it to finish instead of
     # killing it mid-request. Guard against a double decrement across the
     # early-return / exception / streaming-generator exit paths below.
+    if request.method == "POST":
+        _count(model_name)
     _memory_manager().mark_busy(model_name)
     marked_idle = False
 
@@ -210,6 +240,7 @@ async def proxy(path: str, request: Request) -> Response:
             async with httpx.AsyncClient(timeout=httpx.Timeout(2.0)) as probe:
                 await probe.head(backend)
         except (httpx.ConnectError, httpx.TimeoutException):
+            _count(model_name, error=True)
             _mark_idle_once()
             return _backend_unavailable(model_name, model_cfg.port)
 
@@ -224,6 +255,7 @@ async def proxy(path: str, request: Request) -> Response:
                             content=body_bytes, headers=headers, params=fwd_params,
                         ) as resp:
                             if resp.status_code >= 400:
+                                _count(model_name, error=True)
                                 # Backend returned an error (e.g. 404 from mlx_lm.server
                                 # when it rejects a request). Emit a proper SSE error so
                                 # the client sees it rather than "Stream ended without
@@ -240,6 +272,7 @@ async def proxy(path: str, request: Request) -> Response:
                                 _touch_keepawake()
                                 yield chunk
                     except httpx.ConnectError:
+                        _count(model_name, error=True)
                         err = json.dumps({"error": {"message": f"Backend for '{model_name}' died mid-stream", "type": "service_unavailable"}})
                         yield f"data: {err}\n\ndata: [DONE]\n\n".encode()
             finally:
@@ -253,12 +286,15 @@ async def proxy(path: str, request: Request) -> Response:
                     request.method, url,
                     content=body_bytes, headers=headers, params=fwd_params,
                 )
+            if resp.status_code >= 400:
+                _count(model_name, error=True)
             return Response(
                 content=resp.content,
                 status_code=resp.status_code,
                 headers=dict(resp.headers),
             )
         except (httpx.ConnectError, httpx.TimeoutException):
+            _count(model_name, error=True)
             return _backend_unavailable(model_name, model_cfg.port)
         finally:
             _mark_idle_once()

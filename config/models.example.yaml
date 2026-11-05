@@ -11,6 +11,12 @@ server:
   # Hard floor: refuse to start a model if free system RAM (after projected load)
   # would drop below this value. Last-resort backstop against swap/OOM.
   min_free_memory_gb: 12.0
+  # Read-only technical dashboard at http://127.0.0.1:6300/_dashboard/ (numbers only, never
+  # prompts or responses). Per-request speeds are kept in ~/.local/share/mlx/metrics.db and survive
+  # restarts; the newest metrics_retention_rows rows are retained. Opt-in: off unless set to true
+  # (also gates the metrics poller and per-model request counting).
+  dashboard_enabled: false
+  metrics_retention_rows: 50000
 
 
 

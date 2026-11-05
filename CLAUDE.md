@@ -160,6 +160,19 @@ For streaming requests, the `httpx.AsyncClient` **must** be opened inside `_stre
 - `VENV_DIR = ~/.local/share/mlx/venvs/`
 - Stop sequence: SIGTERM → 5s poll → SIGKILL
 
+**Dashboard and request metrics (`dashboard.py`, `metrics_store.py`, `metrics_poller.py`):** a read-only,
+GET-only web UI at `/_dashboard/` (static `mlx_server/dashboard/index.html`, no external requests). Privacy is
+structural: the router never reads response bytes for metrics. A daemon thread polls each running mlx-vlm backend's own
+`GET /v1/metrics` (content-free per-request envelopes, last 32) every 5 s plus once in `MemoryManager.before_stop`
+right before an eviction, and `MetricsStore` copies only allow-listed numeric/enum columns into SQLite
+(`~/.local/share/mlx/metrics.db`, dedup on model+ts+tokens, newest `metrics_retention_rows` kept, default 50 000). Text
+columns only accept short enum-like tokens, so a future mlx-vlm text field cannot leak. mlx-lm/audio/image backends have
+no such endpoint; the proxy only tallies POSTs and errors per model (`count_request`/`count_error`, flushed by the
+poller). The dashboard router is included BEFORE the catch-all proxy route; adding a write route under `/_dashboard`
+is forbidden (a test enforces GET/HEAD only). `prefill_tok_s` is inflated on APC hits (envelope has no cached-token
+count). The feature is opt-in: `dashboard_enabled` defaults to false and gates UI, API, poller and counting. Tests: `test_metrics_store.py`,
+`test_metrics_poller.py`, `test_dashboard.py` (includes a prompt-marker privacy test), `test_router_counting.py`.
+
 **Keep-awake (`mlx_server/keepawake.py`):** every proxied request (and every
 streamed chunk) calls `touch()`, which holds a `caffeinate -d -i` assertion
 for `GRACE_SECONDS` (90s) past the last activity, then releases it. Prevents

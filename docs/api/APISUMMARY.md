@@ -123,6 +123,25 @@ curl -X POST http://localhost:6300/v1/images/generations \
 
 All images generated in a single tensor-batched denoising loop. With `?sse=true`, batch progress events reflect shared steps; the done event contains all N images. **Cannot be aborted mid-generation.**
 
+## Dashboard (read-only, `GET` only)
+
+`http://localhost:6300/_dashboard/` is a technical dashboard: settings, models, live memory, request counts and, for the
+last N requests, prefill and decode tokens/s. **Never prompts or responses**: the numbers come from the mlx-vlm backends'
+own content-free `/v1/metrics` (polled every 5 s, also right before an eviction) and are kept in
+`~/.local/share/mlx/metrics.db`, so they survive restarts. Only mlx-vlm models report per-request speeds; every model
+is counted in `router_counts`. No auth, router listens on 127.0.0.1. Opt-in: set `dashboard_enabled: true` in the server config (default off, everything below returns 404).
+
+```bash
+curl http://localhost:6300/_dashboard/api/overview            # models, status, memory, router_counts
+curl http://localhost:6300/_dashboard/api/config              # settings (home dir shown as ~)
+curl "http://localhost:6300/_dashboard/api/requests?model=qwen3.8-27b&limit=500"   # newest first, max 5000
+curl "http://localhost:6300/_dashboard/api/stats?hours=168"   # p50/p90 per prompt-size bucket
+curl http://localhost:6300/_dashboard/api/cache/qwen3.8-27b   # prompt-cache counters (running models)
+```
+
+`prefill_tok_s` counts cached prompt tokens too, so it is inflated on prompt-cache hits; the first request after a model
+loads is also slow (warm-up). Retention: newest `metrics_retention_rows` (default 50 000).
+
 ## Input fields injected by router (per-model defaults)
 
 The router merges `ModelConfig.defaults` from `models.yaml` on every request.

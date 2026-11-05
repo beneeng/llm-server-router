@@ -7,6 +7,7 @@ import logging
 import sys
 import time
 from collections import OrderedDict
+from typing import Callable
 
 import psutil
 
@@ -68,6 +69,10 @@ class MemoryManager:
         self._lock = asyncio.Lock()
         self._inflight: dict[str, int] = {}
         self._idle_events: dict[str, asyncio.Event] = {}
+        # Called with the model name right before it is force-stopped, so
+        # per-request metrics still held in the backend can be collected.
+        # Best effort: a failing hook must never block an eviction.
+        self.before_stop: Callable[[str], None] | None = None
 
     async def ensure_model_ready(self, model_name: str) -> None:
         async with self._lock:
@@ -229,6 +234,11 @@ class MemoryManager:
                 available_gb,
                 f"{self._cfg.max_total_memory_gb:.1f} GB" if self._cfg.max_total_memory_gb else "none",
             )
+            if self.before_stop is not None:
+                try:
+                    await loop.run_in_executor(None, self.before_stop, victim)
+                except Exception:
+                    log.exception("before_stop hook failed for '%s'", victim)
             await loop.run_in_executor(None, stop_process, victim)
             self._lru.pop(victim, None)
             self._started_at.pop(victim, None)

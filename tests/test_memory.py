@@ -161,3 +161,39 @@ def test_untracked_model_is_evicted_before_a_tracked_one(monkeypatch):
     asyncio.run(_run_enforce(mgr))
 
     assert stopped[0] == "unseen"
+
+
+def test_before_stop_hook_runs_before_the_victim_is_stopped(monkeypatch):
+    """The metrics poller gets a last look at the backend before it disappears."""
+    alive = {"a": 1001}
+    order: list[str] = []
+    stopped: list[str] = []
+    _patch_pressure(monkeypatch, alive, stopped, pressure_names={"a"})
+
+    mgr = MemoryManager(_cfg("a", "requester"))
+    mgr._touch("a")
+    mgr._touch("requester")
+    mgr.before_stop = lambda name: order.append(f"hook:{name}:stopped={bool(stopped)}")
+
+    asyncio.run(_run_enforce(mgr))
+
+    assert order == ["hook:a:stopped=False"]
+    assert stopped == ["a"]
+
+
+def test_failing_before_stop_hook_does_not_block_eviction(monkeypatch):
+    alive = {"a": 1001}
+    stopped: list[str] = []
+    _patch_pressure(monkeypatch, alive, stopped, pressure_names={"a"})
+
+    mgr = MemoryManager(_cfg("a", "requester"))
+    mgr._touch("a")
+    mgr._touch("requester")
+
+    def boom(name: str) -> None:
+        raise RuntimeError("backend already gone")
+
+    mgr.before_stop = boom
+    asyncio.run(_run_enforce(mgr))
+
+    assert stopped == ["a"]

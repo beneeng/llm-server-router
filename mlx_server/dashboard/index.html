@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>MLX router</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb;
+    --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,.10);
+    --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300;
+    --other: #898781;
+    --accent: #2a78d6; --track: #cde2fb;
+    --good: #0ca30c; --warning: #fab219; --critical: #d03b3b;
+    --good-text: #006300;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface: #1a1a19;
+      --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,.10);
+      --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300;
+      --accent: #3987e5; --track: #0d366b;
+      --good-text: #0ca30c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1120px; margin: 0 auto; padding: 24px 20px 64px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  h1 { font-size: 20px; margin: 0; font-weight: 600; }
+  h2 { font-size: 15px; margin: 0 0 4px; font-weight: 600; }
+  .sub { color: var(--ink-2); font-size: 13px; }
+  .muted { color: var(--muted); }
+  .filters { display: flex; gap: 16px; flex-wrap: wrap; margin: 16px 0 20px; align-items: end; }
+  .filters label { display: grid; gap: 4px; font-size: 12px; color: var(--ink-2); }
+  select { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--axis);
+           border-radius: 6px; padding: 6px 8px; min-width: 150px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+          padding: 16px 18px; margin-bottom: 16px; transition: opacity .15s; }
+  .loading .card, .loading .kpis { opacity: .6; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin-bottom: 16px; transition: opacity .15s; }
+  .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .kpi .label { font-size: 12px; color: var(--ink-2); }
+  .kpi .value { font-size: 28px; font-weight: 600; margin-top: 2px; }
+  .kpi .note { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .meter { height: 8px; border-radius: 4px; background: var(--track); margin-top: 8px; overflow: hidden; }
+  .meter > div { height: 100%; background: var(--accent); border-radius: 4px; }
+  .meter.warn > div { background: var(--warning); } .meter.crit > div { background: var(--critical); }
+  .chart { position: relative; }
+  svg { display: block; width: 100%; height: auto; overflow: visible; }
+  svg text { fill: var(--muted); font: 11px system-ui, sans-serif; }
+  svg .grid { stroke: var(--grid); stroke-width: 1; }
+  svg .axis { stroke: var(--axis); stroke-width: 1; }
+  svg .tick-end { fill: var(--ink-2); }
+  svg .val { fill: var(--ink-2); font-size: 12px; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin: 6px 0 4px; font-size: 12px; color: var(--ink-2); }
+  .legend i { display: inline-block; width: 14px; height: 2px; border-radius: 1px; vertical-align: middle; margin-right: 6px; }
+  .tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--axis);
+         border-radius: 8px; padding: 8px 10px; font-size: 12px; min-width: 190px; z-index: 5;
+         box-shadow: 0 2px 8px rgba(0,0,0,.12); display: none; }
+  .tip .big { font-size: 16px; font-weight: 600; color: var(--ink); }
+  .tip .row { display: flex; align-items: center; gap: 6px; color: var(--ink-2); }
+  .tip .key { width: 12px; height: 2px; border-radius: 1px; flex: none; }
+  .tip .dim { color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  caption { text-align: left; color: var(--ink-2); font-size: 12px; padding-bottom: 6px; }
+  th, td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+  th { font-weight: 500; color: var(--ink-2); font-size: 12px; }
+  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; padding-right: 14px; }
+  .scroll { overflow-x: auto; }
+  .status { display: inline-flex; gap: 6px; align-items: center; }
+  .status .dot { font-size: 11px; }
+  .status.on .dot { color: var(--good); } .status.off .dot { color: var(--muted); }
+  details summary { cursor: pointer; font-weight: 600; font-size: 15px; }
+  pre { margin: 10px 0 0; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; color: var(--ink-2); }
+  .banner { background: var(--surface); border: 1px solid var(--critical); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; display: none; }
+  .foot { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  @media (forced-colors: active) { svg path, svg circle, svg rect { forced-color-adjust: auto; } }
+</style>
+</head>
+<body>
+<main id="app">
+  <header>
+    <h1>MLX router</h1>
+    <div class="sub" id="meta">connecting...</div>
+  </header>
+  <div class="banner" id="banner" role="alert">The dashboard API is not reachable. Showing the last data received.</div>
+
+  <div class="filters">
+    <label>Model
+      <select id="f-model"><option value="">All models</option></select>
+    </label>
+    <label>Requests shown in charts
+      <select id="f-limit">
+        <option value="100" selected>Last 100</option><option value="500">Last 500</option>
+        <option value="1000">Last 1,000</option><option value="5000">Last 5,000</option>
+      </select>
+    </label>
+    <label>Period for context statistics
+      <select id="f-hours">
+        <option value="">All time</option><option value="24">Last 24 hours</option>
+        <option value="168">Last 7 days</option><option value="720">Last 30 days</option>
+      </select>
+    </label>
+  </div>
+
+  <section class="kpis" aria-label="Summary">
+    <div class="kpi"><div class="label">Requests recorded</div><div class="value" id="k-req">-</div><div class="note" id="k-req-note"></div></div>
+    <div class="kpi"><div class="label">Models running</div><div class="value" id="k-run">-</div><div class="note" id="k-run-note"></div></div>
+    <div class="kpi"><div class="label">Model memory</div><div class="value" id="k-mem">-</div><div class="note" id="k-mem-note"></div><div class="meter" id="k-mem-meter"><div style="width:0"></div></div></div>
+    <div class="kpi"><div class="label">Median decode speed</div><div class="value" id="k-dec">-</div><div class="note" id="k-dec-note"></div></div>
+  </section>
+
+  <section class="card">
+    <h2>Decode speed per request</h2>
+    <div class="sub">Tokens per second while generating, oldest on the left. Speed falls as the context grows.</div>
+    <div class="chart" id="c-decode"></div>
+  </section>
+
+  <section class="card">
+    <h2>Prefill speed per request</h2>
+    <div class="sub">Prompt tokens processed per second before the first token.</div>
+    <div class="chart" id="c-prefill"></div>
+    <div class="foot">The first request after a model loads is slower (kernel warm-up), and requests that reuse the prompt cache
+      look faster than the hardware really is: the backend divides all prompt tokens, cached ones included, by the time taken.</div>
+  </section>
+
+  <section class="card">
+    <h2>Decode speed by context size</h2>
+    <div class="sub" id="ctx-sub">Median per prompt-size bucket. The table below the bars adds the 90th percentile and prefill.</div>
+    <div class="chart" id="c-ctx"></div>
+    <div class="scroll"><table id="t-ctx"><caption class="sr">Statistics by prompt size</caption></table></div>
+  </section>
+
+  <section class="card">
+    <h2>Models</h2>
+    <div class="scroll"><table id="t-models"><caption class="sr">Configured models</caption></table></div>
+  </section>
+
+  <section class="card">
+    <h2>Recent requests</h2>
+    <div class="sub">Numbers only. Prompts and responses are never stored or shown.</div>
+    <div class="scroll"><table id="t-req"><caption class="sr">Most recent requests</caption></table></div>
+  </section>
+
+  <section class="card">
+    <details>
+      <summary>Settings</summary>
+      <pre id="settings"></pre>
+    </details>
+  </section>
+</main>
+
+<script>
+"use strict";
+const REFRESH_MS = 10000;
+const SERIES_VARS = ["--s1", "--s2", "--s3", "--s4", "--s5", "--s6"];
+const state = { overview: null, config: null, requests: [], stats: null, slots: new Map() };
+const $ = (id) => document.getElementById(id);
+
+// DOM helper: every string goes through textContent, never innerHTML (names are untrusted data).
+function el(tag, props, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (k === "class") n.className = v; else if (k === "style") n.style.cssText = v; else n.setAttribute(k, v);
+  }
+  for (const kid of kids) n.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+  return n;
+}
+const NS = "http://www.w3.org/2000/svg";
+function svg(tag, props, text) {
+  const n = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(props || {})) n.setAttribute(k, v);
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+const fmt = (v, d = 1) => v == null ? "-" : Number(v).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
+const fmtInt = (v) => v == null ? "-" : Number(v).toLocaleString();
+const fmtTime = (ts) => ts == null ? "-" : new Date(ts * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+const fmtBytes = (b) => b >= 1e9 ? fmt(b / 1e9, 1) + " GB" : b >= 1e6 ? fmt(b / 1e6, 0) + " MB" : b > 0 ? fmt(b / 1e3, 0) + " kB" : "-";
+const median = (xs) => { const a = xs.filter((x) => x != null).sort((p, q) => p - q); return a.length ? a[Math.floor((a.length - 1) / 2)] : null; };
+
+// ── colour follows the model, never its rank in the current view ─────────────
+// Slot = position among mlx-vlm models in config order (only they report per-request speeds).
+// Beyond the sixth slot a model is drawn in the neutral "other" tone.
+function assignSlots() {
+  state.slots.clear();
+  let i = 0;
+  for (const m of (state.config?.models || [])) {
+    if (!m.backend.startsWith("mlx-vlm")) continue;
+    state.slots.set(m.name, i < SERIES_VARS.length ? SERIES_VARS[i] : "--other");
+    i++;
+  }
+}
+const colorOf = (name) => `var(${state.slots.get(name) || "--other"})`;
+
+// ── data ─────────────────────────────────────────────────────────────────────
+async function getJSON(path) {
+  const r = await fetch(path, { cache: "no-store" });
+  if (!r.ok) throw new Error(path + " " + r.status);
+  return r.json();
+}
+async function refresh() {
+  if (document.hidden) return;
+  const model = $("f-model").value, limit = $("f-limit").value, hours = $("f-hours").value;
+  const q = (o) => new URLSearchParams(Object.fromEntries(Object.entries(o).filter(([, v]) => v))).toString();
+  document.body.classList.add("loading");
+  try {
+    const [overview, config, reqs, stats] = await Promise.all([
+      getJSON("api/overview"), getJSON("api/config"),
+      getJSON("api/requests?" + q({ model, limit })), getJSON("api/stats?" + q({ model, hours })),
+    ]);
+    state.overview = overview; state.config = config; state.requests = reqs.requests; state.stats = stats;
+    $("banner").style.display = "none";
+    assignSlots(); fillModelFilter(); render();
+  } catch (e) {
+    $("banner").style.display = "block";
+  } finally {
+    document.body.classList.remove("loading");
+  }
+}
+function fillModelFilter() {
+  const sel = $("f-model"), cur = sel.value;
+  const names = state.config.models.filter((m) => m.backend.startsWith("mlx-vlm")).map((m) => m.name);
+  if (sel.options.length - 1 === names.length) return;
+  sel.replaceChildren(el("option", { value: "" }, "All models"), ...names.map((n) => el("option", { value: n }, n)));
+  sel.value = cur;
+}
+
+// ── rendering ────────────────────────────────────────────────────────────────
+function render() {
+  renderKpis(); renderLine("c-decode", "decode_tok_s", "decode tok/s"); renderLine("c-prefill", "prefill_tok_s", "prefill tok/s");
+  renderContext(); renderModels(); renderRequests(); renderSettings();
+  const up = state.overview.uptime_s;
+  $("meta").textContent = `router up ${up >= 3600 ? fmt(up / 3600, 1) + " h" : fmt(up / 60, 0) + " min"} · updated ${new Date().toLocaleTimeString()}`;
+}
+function renderKpis() {
+  const o = state.overview;
+  const routerTotal = o.router_counts.reduce((s, c) => s + c.requests, 0);
+  const errors = o.router_counts.reduce((s, c) => s + c.errors, 0);
+  $("k-req").textContent = fmtInt(routerTotal);
+  $("k-req-note").textContent = `${fmtInt(state.stats.requests)} with speed data · ${fmtInt(errors)} errors`;
+  const running = o.models.filter((m) => m.alive);
+  $("k-run").textContent = `${running.length} / ${o.models.length}`;
+  $("k-run-note").textContent = running.length ? running.map((m) => m.name).join(", ") : "none loaded";
+  const used = o.memory.used_gb, cap = o.memory.cap_gb;
+  $("k-mem").textContent = fmt(used, 1) + " GB";
+  $("k-mem-note").textContent = (cap ? `of ${fmt(cap, 0)} GB budget · ` : "") + `${fmt(o.memory.free_gb, 0)} GB free`;
+  const pct = cap ? Math.min(100, used / cap * 100) : 0;
+  const m = $("k-mem-meter"); m.className = "meter" + (pct > 95 ? " crit" : pct > 80 ? " warn" : "");
+  m.firstElementChild.style.width = pct + "%";
+  const dec = median(state.requests.map((r) => r.decode_tok_s));
+  $("k-dec").textContent = dec == null ? "-" : fmt(dec, 1) + " tok/s";
+  $("k-dec-note").textContent = `over the last ${fmtInt(state.requests.length)} requests shown`;
+}
+
+// Line chart over request sequence. One series per model; hover snaps to the nearest request.
+function renderLine(host, key, unit) {
+  const root = $(host); root.replaceChildren();
+  const rows = state.requests.filter((r) => r[key] != null).slice().reverse(); // oldest first
+  if (!rows.length) { root.append(el("div", { class: "muted", style: "padding:24px 0" }, "No requests with speed data yet.")); return; }
+  const W = Math.max(320, root.clientWidth || 800), H = 220, L = 44, R = 16, T = 12, B = 26;
+  const maxV = Math.max(...rows.map((r) => r[key])), top = niceMax(maxV);
+  const x = (i) => L + (rows.length === 1 ? (W - L - R) / 2 : i * (W - L - R) / (rows.length - 1));
+  const y = (v) => T + (H - T - B) * (1 - v / top);
+  const s = svg("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", tabindex: "0",
+    "aria-label": `${unit} for the last ${rows.length} requests; arrow keys move between requests` });
+  for (const t of ticks(top)) {
+    s.append(svg("line", { class: t === 0 ? "axis" : "grid", x1: L, x2: W - R, y1: y(t), y2: y(t) }));
+    s.append(svg("text", { x: L - 8, y: y(t) + 4, "text-anchor": "end" }, fmtInt(t)));
+  }
+  s.append(svg("text", { x: L, y: H - 6 }, fmtTime(rows[0].ts)));
+  s.append(svg("text", { x: W - R, y: H - 6, "text-anchor": "end" }, fmtTime(rows[rows.length - 1].ts)));
+
+  const byModel = new Map();
+  rows.forEach((r, i) => { if (!byModel.has(r.model)) byModel.set(r.model, []); byModel.get(r.model).push([i, r]); });
+  for (const [model, pts] of byModel) {
+    const d = pts.map(([i, r], k) => `${k ? "L" : "M"}${x(i).toFixed(1)},${y(r[key]).toFixed(1)}`).join("");
+    if (pts.length > 1) s.append(svg("path", { d, fill: "none", stroke: colorOf(model), "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+    if (rows.length <= 150) for (const [i, r] of pts) {
+      s.append(svg("circle", { cx: x(i), cy: y(r[key]), r: 4, fill: colorOf(model), stroke: "var(--surface)", "stroke-width": 2 }));
+    }
+  }
+  const cross = svg("line", { class: "axis", y1: T, y2: H - B, style: "display:none" });
+  const ring = svg("circle", { r: 6, fill: "none", stroke: "var(--ink)", "stroke-width": 2, style: "display:none" });
+  s.append(cross, ring);
+  root.append(legendFor([...byModel.keys()]), s);
+  const tip = el("div", { class: "tip" }); root.append(tip);
+
+  let cur = rows.length - 1;
+  const show = (i) => {
+    cur = Math.max(0, Math.min(rows.length - 1, i)); const r = rows[cur];
+    cross.setAttribute("x1", x(cur)); cross.setAttribute("x2", x(cur)); cross.style.display = "";
+    ring.setAttribute("cx", x(cur)); ring.setAttribute("cy", y(r[key])); ring.style.display = "";
+    tip.replaceChildren(
+      el("div", { class: "big" }, fmt(r[key], 1) + " tok/s"),
+      el("div", { class: "row" }, el("span", { class: "key", style: `background:${colorOf(r.model)}` }), r.model),
+      el("div", { class: "dim" }, `${fmtTime(r.ts)} · prompt ${fmtInt(r.prompt_tokens)} · output ${fmtInt(r.completion_tokens)}`));
+    tip.style.display = "block";
+    const sc = root.clientWidth / W, px = x(cur) * sc;
+    tip.style.left = Math.min(px + 12, root.clientWidth - 210) + "px";
+    tip.style.top = (T + 40) + "px";
+  };
+  s.addEventListener("pointermove", (e) => {
+    const box = s.getBoundingClientRect(), px = (e.clientX - box.left) * (W / box.width);
+    show(Math.round((px - L) / ((W - L - R) / Math.max(1, rows.length - 1))));
+  });
+  s.addEventListener("pointerleave", () => { tip.style.display = "none"; cross.style.display = "none"; ring.style.display = "none"; });
+  s.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowLeft") { show(cur - 1); e.preventDefault(); }
+    if (e.key === "ArrowRight") { show(cur + 1); e.preventDefault(); }
+  });
+}
+function legendFor(models) {
+  if (models.length < 2) return el("div", { class: "legend" });
+  return el("div", { class: "legend" }, ...models.map((m) =>
+    el("span", {}, el("i", { style: `background:${colorOf(m)}` }), m)));
+}
+function niceMax(v) {
+  if (v <= 0) return 10;
+  const p = Math.pow(10, Math.floor(Math.log10(v))), n = v / p;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * p;
+}
+const ticks = (top) => [0, 1, 2, 3, 4].map((i) => top * i / 4);
+
+// Bars: median decode speed by prompt-size bucket (single series, one hue, value at the tip).
+function renderContext() {
+  const root = $("c-ctx"); root.replaceChildren();
+  const buckets = state.stats.buckets;
+  const max = Math.max(1, ...buckets.map((b) => b.decode_p50 || 0)), top = niceMax(max);
+  const W = Math.max(320, root.clientWidth || 800), rowH = 34, L = 76, R = 70, H = buckets.length * rowH + 8;
+  const s = svg("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Median decode tokens per second by prompt size" });
+  buckets.forEach((b, i) => {
+    const cy = i * rowH + rowH / 2 + 4;
+    s.append(svg("text", { x: L - 10, y: cy + 4, "text-anchor": "end" }, b.bucket));
+    if (!b.decode_p50) { s.append(svg("text", { x: L, y: cy + 4 }, b.requests ? "no speed data" : "no requests")); return; }
+    const w = Math.max(2, (W - L - R) * b.decode_p50 / top);
+    // 4px rounded data end, square at the baseline
+    const h = 20, y0 = cy - h / 2, r = Math.min(4, w);
+    s.append(svg("path", { d: `M${L},${y0} H${L + w - r} Q${L + w},${y0} ${L + w},${y0 + r} V${y0 + h - r} Q${L + w},${y0 + h} ${L + w - r},${y0 + h} H${L} Z`, fill: "var(--accent)" }));
+    s.append(svg("text", { class: "val", x: L + w + 8, y: cy + 4 }, fmt(b.decode_p50, 1) + " tok/s"));
+    const hit = svg("rect", { x: 0, y: i * rowH, width: W, height: rowH, fill: "transparent" });
+    hit.append(svg("title", {}, `${b.bucket}: median ${fmt(b.decode_p50, 1)}, p90 ${fmt(b.decode_p90, 1)} decode tok/s, ${fmtInt(b.requests)} requests`));
+    s.append(hit);
+  });
+  root.append(s);
+  const t = $("t-ctx"); t.replaceChildren(t.firstElementChild);
+  t.append(el("thead", {}, el("tr", {}, el("th", {}, "Prompt size"), ...["Requests", "Decode p50", "Decode p90", "Prefill p50", "Prefill p90", "First token p50"].map((h) => el("th", { class: "n" }, h)))));
+  t.append(el("tbody", {}, ...buckets.map((b) => el("tr", {}, el("td", {}, b.bucket),
+    el("td", { class: "n" }, fmtInt(b.requests)), el("td", { class: "n" }, fmt(b.decode_p50)), el("td", { class: "n" }, fmt(b.decode_p90)),
+    el("td", { class: "n" }, fmt(b.prefill_p50, 0)), el("td", { class: "n" }, fmt(b.prefill_p90, 0)),
+    el("td", { class: "n" }, b.ttft_p50 == null ? "-" : fmt(b.ttft_p50, 2) + " s")))));
+}
+function renderModels() {
+  const t = $("t-models"); t.replaceChildren(t.firstElementChild);
+  const cfg = new Map(state.config.models.map((m) => [m.name, m]));
+  const heads = ["Model", "Backend", "Status", "Memory now", "Budget", "Prompt cache on disk", "Port"];
+  t.append(el("thead", {}, el("tr", {}, ...heads.map((h, i) => el("th", { class: i >= 3 ? "n" : "" }, h)))));
+  t.append(el("tbody", {}, ...state.overview.models.map((m) => {
+    const c = cfg.get(m.name) || {};
+    const flags = [c.thinking && "thinking", c.mtp && "draft", c.lazy && "lazy", c.protected && "protected"].filter(Boolean).join(", ");
+    return el("tr", {},
+      el("td", {}, m.name, flags ? el("span", { class: "muted" }, "  " + flags) : ""),
+      el("td", {}, m.backend),
+      el("td", {}, el("span", { class: "status " + (m.alive ? "on" : "off") }, el("span", { class: "dot", "aria-hidden": "true" }, m.alive ? "●" : "○"), m.alive ? "running" : "stopped")),
+      el("td", { class: "n" }, m.alive ? fmt(m.rss_gb, 1) + " GB" : "-"),
+      el("td", { class: "n" }, m.memory_gb ? fmt(m.memory_gb, 0) + " GB" : "-"),
+      el("td", { class: "n" }, fmtBytes(m.apc_bytes)),
+      el("td", { class: "n" }, m.port));
+  })));
+}
+function renderRequests() {
+  const t = $("t-req"); t.replaceChildren(t.firstElementChild);
+  const heads = ["Time", "Model", "Prompt tokens", "Output tokens", "Prefill tok/s", "Decode tok/s", "First token", "Finish"];
+  t.append(el("thead", {}, el("tr", {}, ...heads.map((h, i) => el("th", { class: i >= 2 && i <= 6 ? "n" : "" }, h)))));
+  t.append(el("tbody", {}, ...state.requests.slice(0, 100).map((r) => el("tr", {},
+    el("td", {}, fmtTime(r.ts)),
+    el("td", {}, el("span", { style: `display:inline-block;width:10px;height:2px;background:${colorOf(r.model)};margin-right:6px;vertical-align:middle` }), r.model),
+    el("td", { class: "n" }, fmtInt(r.prompt_tokens)), el("td", { class: "n" }, fmtInt(r.completion_tokens)),
+    el("td", { class: "n" }, fmt(r.prefill_tok_s, 0)), el("td", { class: "n" }, fmt(r.decode_tok_s)),
+    el("td", { class: "n" }, r.ttft_s == null ? "-" : fmt(r.ttft_s, 2) + " s"), el("td", {}, r.finish_reason || "-")))));
+}
+function renderSettings() {
+  const c = state.config, lines = [];
+  lines.push("server");
+  for (const [k, v] of Object.entries(c.server)) lines.push(`  ${k}: ${v}`);
+  for (const m of c.models) {
+    lines.push("", m.name);
+    for (const [k, v] of Object.entries(m)) if (k !== "name") lines.push(`  ${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`);
+  }
+  $("settings").textContent = lines.join("\n");
+}
+
+for (const id of ["f-model", "f-limit", "f-hours"]) $(id).addEventListener("change", refresh);
+let resizeTimer; window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => state.overview && render(), 150); });
+document.addEventListener("visibilitychange", refresh);
+refresh(); setInterval(refresh, REFRESH_MS);
+</script>
+</body>
+</html>

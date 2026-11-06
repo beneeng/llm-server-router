@@ -218,3 +218,10 @@ def test_mlx_vlm_reasoning_effort_map_leaves_unlisted_value():
     body = {"reasoning_effort": "low"}
     m.resolve_backend().transform_request(body, m)
     assert body["reasoning_effort"] == "low"
+
+
+def test_mlx_vlm_reasoning_effort_map_nested_and_case_insensitive():
+    m = ModelConfig(name="m", source="s", backend="mlx-vlm", reasoning_effort_map={"high": "xhigh"})
+    body = {"reasoning": {"effort": " High "}}
+    m.resolve_backend().transform_request(body, m)
+    assert body["reasoning"]["effort"] == "xhigh"

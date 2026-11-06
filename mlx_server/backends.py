@@ -150,10 +150,18 @@ class MlxVlm(Backend):
                 body.pop("thinking_token_budget")
             else:
                 body["thinking_budget"] = body.pop("thinking_token_budget")
-        # Per-model remap of reasoning_effort for templates with a fixed value set.
-        effort = body.get("reasoning_effort")
-        if isinstance(effort, str) and effort in model.reasoning_effort_map:
-            body["reasoning_effort"] = model.reasoning_effort_map[effort]
+        # Per-model remap of the reasoning effort for templates with a fixed value
+        # set. mlx-vlm reads it from `reasoning_effort` or `reasoning.effort` and
+        # normalizes with strip().lower(), so match the same way.
+        if model.reasoning_effort_map:
+            remap = {k.strip().lower(): v for k, v in model.reasoning_effort_map.items()}
+            holders = [(body, "reasoning_effort")]
+            if isinstance(body.get("reasoning"), dict):
+                holders.append((body["reasoning"], "effort"))
+            for holder, key in holders:
+                val = holder.get(key)
+                if isinstance(val, str) and val.strip().lower() in remap:
+                    holder[key] = remap[val.strip().lower()]
         # mlx_vlm does not use chat_template_kwargs — strip it so the server
         # doesn't choke on an unrecognised field.
         body.pop("chat_template_kwargs", None)

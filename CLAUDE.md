@@ -278,5 +278,5 @@ Notes:
 
 ## External integrations
 
-- **opencode**: `~/.config/opencode/opencode_local.json` — `mlx-router` provider (port 6300), Qwen models only
+- **opencode**: `~/.config/opencode/opencode.jsonc` — `mlx` provider (port 6300), all chat models, default `qwen3.8-flash-next-ple`. Written in the opencode 2 format (`providers`/`package`/`settings`/`capabilities`; opencode 1.x ignored `providers`, and 2.x auto-migrates the legacy `provider` key but drops `reasoning`/`temperature`). To test a config without touching the real router use `OPENCODE_CONFIG=... opencode run --standalone` (the default background service ignores it). Sets no sampling params, so the router's per-model `defaults` apply. New chat models in models.yaml must be added there by hand
 - **Pi harness**: `~/.pi/agent/models.json` — `mlx-router` provider, all models including Gemma4

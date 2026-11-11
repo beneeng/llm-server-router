@@ -12,6 +12,34 @@ inference works fine without it.
 from __future__ import annotations
 
 
+def patch_qwen_tool_parser(parser_module) -> None:
+    """Keep a malformed object/array tool argument from killing the whole stream.
+
+    qwen3_coder's `_convert_param_value` falls back to `ast.literal_eval` when
+    `json.loads` fails. A model that drops a closing bracket in a long nested
+    argument makes that raise `SyntaxError`, which the streaming path
+    (`mlx_vlm/tools/streaming.py`, `except (ValueError, KeyError, TypeError)`)
+    does not catch: the request fails and all generated tokens, including text
+    written before the tool call, are lost.
+
+    The patch returns the raw string instead. The client then reports an
+    argument validation error to the model, which can retry the call.
+    `parser_module` is a parameter so the patch is testable without mlx_vlm.
+    """
+    if getattr(parser_module, "_malformed_args_patched", False):
+        return
+    original = parser_module._convert_param_value
+
+    def _convert_param_value(param_value, param_name, param_config, *args, **kwargs):
+        try:
+            return original(param_value, param_name, param_config, *args, **kwargs)
+        except SyntaxError:
+            return param_value
+
+    parser_module._convert_param_value = _convert_param_value
+    parser_module._malformed_args_patched = True
+
+
 def _apply_patches() -> None:
     import mlx.nn as nn
     import mlx_vlm.utils as _utils
@@ -62,6 +90,9 @@ def _apply_patches() -> None:
         return combined
 
     ThinkingStreamState._strip_open_marker = _patched_strip_open_marker
+
+    from mlx_vlm.tools.parsers import qwen3_coder
+    patch_qwen_tool_parser(qwen3_coder)
 
 
 def main() -> None:

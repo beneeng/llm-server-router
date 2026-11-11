@@ -104,7 +104,10 @@ class MemoryManager:
                     raise RuntimeError(
                         f"Not enough free memory to start '{model_name}': "
                         f"{available:.1f} GB available, need {needed:.1f} GB + "
-                        f"{self._cfg.min_free_memory_gb:.1f} GB headroom"
+                        f"{self._cfg.min_free_memory_gb:.1f} GB headroom. "
+                        "To free memory: stop other models (`mlx stop`), quit "
+                        "memory-heavy apps, or purge the file cache "
+                        "(`sudo purge`) and retry."
                     )
 
             await self._ensure_running(model_name)

@@ -21,7 +21,7 @@ from mlx_server.config import ModelConfig
 
 def test_registry_keys():
     assert set(BACKENDS) == {
-        "mlx-lm", "mlx-vlm", "mlx-vlm-dsv4", "mlx-audio", "mflux", "mflux2", "mflux-ideogram",
+        "mlx-lm", "mlx-vlm", "mlx-vlm-dsv4", "mlx-vlm-zoo", "mlx-audio", "mflux", "mflux2", "mflux-ideogram",
     }
 
 
@@ -30,6 +30,7 @@ def test_envs_and_packages():
     assert BACKENDS["mlx-vlm"].env == "main"
     assert BACKENDS["mlx-audio"].env == "audio"
     assert BACKENDS["mflux"].env == "image"
+    assert BACKENDS["mlx-vlm-zoo"].env == "zoo"
     # main backends declare no install packages; optional ones do.
     assert BACKENDS["mlx-lm"].packages == ()
     assert "mflux" in BACKENDS["mflux"].packages
@@ -225,3 +226,36 @@ def test_mlx_vlm_reasoning_effort_map_nested_and_case_insensitive():
     body = {"reasoning": {"effort": " High "}}
     m.resolve_backend().transform_request(body, m)
     assert body["reasoning"]["effort"] == "xhigh"
+
+
+# ── mlx-vlm-zoo (unsloth-zoo qwen4_exp fusions, isolated env) ─────────────────
+
+def _zoo(**kw) -> ModelConfig:
+    return ModelConfig(name="fn", source="/tmp/ckpt", backend="mlx-vlm-zoo", **kw)
+
+
+def test_zoo_is_isolated_mlx_vlm_variant():
+    b = BACKENDS["mlx-vlm-zoo"]
+    assert isinstance(b, MlxVlm)
+    # Own env: unsloth-zoo pins mlx and mlx-vlm and must not hold back the main venv.
+    assert b.env == "zoo"
+    assert b.wrapper == "mlx_vlm_zoo_wrapper.py"
+    assert "unsloth-zoo==2026.11.4" in b.packages
+    assert "mlx-vlm==0.7.12" in b.packages and "mlx==0.32.4" in b.packages
+    # Keeps image input and the dashboard poller's "mlx-vlm" prefix match.
+    assert _zoo().accepts_image_input is True
+    assert b.name.startswith("mlx-vlm")
+
+
+def test_zoo_env_does_not_share_packages_with_other_envs():
+    # cli._installable_envs() unions packages per env name.
+    others = {b.env for n, b in BACKENDS.items() if n != "mlx-vlm-zoo"}
+    assert "zoo" not in others
+
+
+def test_zoo_argv_and_inherited_apc_env():
+    argv = _args_for(_zoo(thinking=True, port=6306))
+    assert argv[0] == "PY" and argv[1].endswith("mlx_vlm_zoo_wrapper.py")
+    assert "--enable-thinking" in argv and "--trust-remote-code" in argv
+    env = _zoo().resolve_backend().env_vars(_zoo())
+    assert env["APC_ENABLED"] == "1" and env["APC_DISK_PATH"].endswith("apc/fn")

@@ -23,9 +23,10 @@ first model start** — no manual step is required. To pre-warm them explicitly:
 ```bash
 mlx install audio   # creates ~/.local/share/mlx/venvs/audio/ + installs mlx-audio
 mlx install image   # creates ~/.local/share/mlx/venvs/image/ + installs mflux
+mlx install zoo     # creates ~/.local/share/mlx/venvs/zoo/ + installs unsloth-zoo (pins mlx-vlm 0.7.12)
 mlx install --all   # provisions every optional backend env
 ```
-The install target is a backend **env** name (`audio`, `image`); the package
+The install target is a backend **env** name (`audio`, `image`, `zoo`); the package
 lists are derived from `backends.BACKENDS`, not hardcoded in the CLI.
 
 Do NOT add `mflux` or `mlx-audio` to `pyproject.toml` — they will break `uv sync`.
@@ -107,6 +108,7 @@ Models reference a backend by name (`backend:` in models.yaml). To add a modalit
 | `mlx-lm` | `mlx_lm_wrapper.py` | `main` (tool venv) |
 | `mlx-vlm` | `mlx_vlm_wrapper.py` | `main` (tool venv) |
 | `mlx-vlm-dsv4` | `mlx_vlm_dsv4_wrapper.py` | `main` (tool venv) |
+| `mlx-vlm-zoo` | `mlx_vlm_zoo_wrapper.py` | `zoo` → `~/.local/share/mlx/venvs/zoo/` |
 | `mlx-audio` | `mlx_audio_wrapper.py` | `audio` → `~/.local/share/mlx/venvs/audio/` |
 | `mflux` | `mflux_wrapper.py` | `image` → `~/.local/share/mlx/venvs/image/` |
 | `mflux2` | `mflux2_wrapper.py` | `image` → `~/.local/share/mlx/venvs/image/` |
@@ -258,6 +260,13 @@ Notes:
 - *Garbage output after a silent load.* mlx-vlm 0.7.0 does not remap `embed_tokens.scales/biases` and `hc_head.*` for the mlx-community 4-bit checkpoint (fixed in 0.7.11, hence the pin). `mlx_vlm_wrapper.py` loads non-strictly and hid the error, so the server answered with noise. `mlx_vlm_dsv4_wrapper.py` deliberately keeps strict loading. If this model ever prints noise again, run `python -m mlx_vlm.server` without our wrapper first: a `Received N parameters not in model` error means a version problem.
 - *Stub chat template.* The repo's `chat_template.jinja` has no tools, no `tool` role, no `tool_calls` (a request with `tools` is only ~11 prompt tokens). The real format is DeepSeek's `encoding_dsv4.py`, vendored unchanged in `mlx_server/dsv4/` (MIT, see `THIRD_PARTY_NOTICES.md`; re-vendor instead of editing). The wrapper swaps `DeepseekV4Processor.apply_chat_template` for it.
 - *No DSML parser upstream.* mlx-vlm cannot infer a parser from the stub template, so the backend's `transform_request` sets `tool_parser: deepseek_v4_dsml`, registered by the wrapper in `mlx_vlm.tools.registry`. These hooks are tied to mlx-vlm 0.7.11 (`mlx_vlm.tools.*`); `tests/test_dsv4.py` fails loudly on a bump that moves them. Tokenizer adds no BOS, so the encoder's own BOS is the only one.
+
+**`mlx-vlm-zoo` (unsloth-zoo qwen4_exp fusions, opt-in)** - same server as `mlx-vlm`, but `mlx_vlm_zoo_wrapper.py` holds unsloth-zoo's `generation_mode(model)` open on the server's generation thread (patched `ResponseGenerator._initialize_model`/`_run`). The fusions (unsloth-zoo PR #1871) are inference scopes that stock `mlx_vlm.server` never opens. Measured in-process on qwen3.8-flash-next-ple: ~+16 % decode (55->66, 48->56, 43->50 tok/s at 33/7.5k/21k prompt tokens), ~1.8x prefill at 8k+. Constraints:
+- Runs in its own `zoo` env because unsloth-zoo pins `mlx==0.32.4` and `mlx-vlm<=0.7.12`; the main venv may move on. The pins live in `MlxVlmZoo.packages`.
+- Output is **not bit-identical** to stock: greedy tokens diverge after a few dozen tokens (both modes are individually reproducible). Texts looked equally good, tool-call quality is gated on a manual check.
+- **MTP stays off**: in every variant (stock or zoo engine) the MTP drafter is slower than no drafter at 8k+ context.
+- Peak memory is ~2 GB above stock; size `memory_gb` accordingly.
+- Benchmarks: `scripts/bench_unsloth_zoo.py`, `scripts/bench_unsloth_zoo_mtp.py` (run under the zoo env python, `mlx stop` first).
 
 **Gemma 4 repetition collapse** — separate structural bug triggered by large system prompts (>10K chars) or many tool definitions (>5-6). Not fixable with `repetition_penalty`. Gemma is excluded from opencode; use via Pi harness or direct curl.
 

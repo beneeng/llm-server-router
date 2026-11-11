@@ -413,3 +413,14 @@ models:
       width: 1024
       height: 1024
 
+  # ── Opt-in: unsloth-zoo decode fusions for Qwen3.8-Flash-Next ────────────────
+  # backend: mlx-vlm-zoo = mlx-vlm 0.7.12 + unsloth-zoo (PR #1871) in its own
+  # `zoo` env. In-process: ~+16 % decode, ~1.8x prefill at 8k+ context. Output
+  # is not bit-identical to stock. No drafter on purpose: MTP is slower at 8k+.
+  # Peak ~85 GB at 24k context (stock ~83), hence memory_gb 88.
+  # - name: qwen3.8-flash-next-ple
+  #   source: /path/to/qwen3.8-flash-next-ple-offload
+  #   backend: mlx-vlm-zoo
+  #   thinking: true
+  #   lazy: true
+  #   memory_gb: 88

@@ -187,6 +187,20 @@ class MlxVlmDsv4(MlxVlm):
             body.setdefault("tool_parser", "deepseek_v4_dsml")
 
 
+class MlxVlmZoo(MlxVlm):
+    """mlx_vlm.server with unsloth-zoo's qwen4_exp fusions (PR #1871) enabled.
+
+    Opt-in per model. Runs in its own env because unsloth-zoo pins
+    mlx==0.32.4 and mlx-vlm<=0.7.12, which must not hold back the main venv.
+    Keep the pins here in sync with unsloth-zoo's own requirements.
+    """
+
+    name = "mlx-vlm-zoo"
+    env = "zoo"
+    packages = ("unsloth-zoo==2026.11.4", "mlx-vlm==0.7.12", "mlx==0.32.4")
+    wrapper = "mlx_vlm_zoo_wrapper.py"
+
+
 class MlxAudio(Backend):
     """TTS / STT via mlx-audio (isolated venv)."""
 
@@ -244,5 +258,6 @@ class MfluxIdeogram(Backend):
 
 
 BACKENDS: dict[str, Backend] = {
-    b.name: b for b in (MlxLm(), MlxVlm(), MlxVlmDsv4(), MlxAudio(), Mflux(), Mflux2(), MfluxIdeogram())
+    b.name: b
+    for b in (MlxLm(), MlxVlm(), MlxVlmDsv4(), MlxVlmZoo(), MlxAudio(), Mflux(), Mflux2(), MfluxIdeogram())
 }

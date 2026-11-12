@@ -222,6 +222,30 @@ models:
       repetition_penalty: 1.0
       max_tokens: 16384
 
+  # ── Qwen3.8-Flash-Next Uncensored via oMLX (Lightning MTP) ─────────────────
+  # Heretic-abliterated oQ4e checkpoint with an embedded MTP head, served by oMLX
+  # (backend `omlx`, isolated env, `mlx install omlx`; needs the Xcode Metal
+  # Toolchain for the custom kernels). oMLX forces the PLE table onto SSD (mmap)
+  # by itself: loaded ~71 GB, peak ~75 GB. Measured Nov 2026 (M5 Max): decode
+  # short 66-78, 8k ~70, 24k 70-74 tok/s; code/JSON 100-117; answers sensitive
+  # questions instead of refusing. The MTPLX route cannot serve a trunk-only
+  # abliterated checkpoint (garbage output), so this is the uncensored path.
+  # Pre-download (a first-start download would exceed the 120 s port timeout):
+  #   hf download latent-variable/Qwen3.8-Flash-Next-heretic-2-oQ4e-mtp
+  # Only one Flash-Next entry fits in RAM at a time; the memory manager evicts the other.
+  - name: qwen3.8-flash-next-uncensored-omlx
+    source: latent-variable/Qwen3.8-Flash-Next-heretic-2-oQ4e-mtp
+    backend: omlx
+    thinking: true
+    lazy: true
+    memory_gb: 80  # measured peak ~75 GB
+    defaults:
+      temperature: 1.0
+      top_p: 0.95
+      top_k: 20
+      repetition_penalty: 1.0
+      max_tokens: 16384
+
   # ── Gemma 4 31B dense ──────────────────────────────────────────────────────
   # z-lab DFlash is NOT suitable here — it targets non-QAT google/gemma-4-31B-it.
   - name: gemma4-31b

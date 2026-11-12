@@ -25,9 +25,10 @@ mlx install audio   # creates ~/.local/share/mlx/venvs/audio/ + installs mlx-aud
 mlx install image   # creates ~/.local/share/mlx/venvs/image/ + installs mflux
 mlx install zoo     # creates ~/.local/share/mlx/venvs/zoo/ + installs unsloth-zoo (pins mlx-vlm 0.7.12)
 mlx install mtplx   # creates ~/.local/share/mlx/venvs/mtplx/ + installs mtplx (pinned)
+mlx install omlx    # creates ~/.local/share/mlx/venvs/omlx/ + builds oMLX (pinned git commit) with its Metal kernels
 mlx install --all   # provisions every optional backend env
 ```
-The install target is a backend **env** name (`audio`, `image`, `zoo`, `mtplx`); the package
+The install target is a backend **env** name (`audio`, `image`, `zoo`, `mtplx`, `omlx`); the package
 lists are derived from `backends.BACKENDS`, not hardcoded in the CLI.
 
 Do NOT add `mflux` or `mlx-audio` to `pyproject.toml` — they will break `uv sync`.
@@ -111,6 +112,7 @@ Models reference a backend by name (`backend:` in models.yaml). To add a modalit
 | `mlx-vlm-dsv4` | `mlx_vlm_dsv4_wrapper.py` | `main` (tool venv) |
 | `mlx-vlm-zoo` | `mlx_vlm_zoo_wrapper.py` | `zoo` → `~/.local/share/mlx/venvs/zoo/` |
 | `mtplx` | none (`mtplx serve` is launched directly) | `mtplx` → `~/.local/share/mlx/venvs/mtplx/` |
+| `omlx` | none (`omlx serve` is launched directly) | `omlx` → `~/.local/share/mlx/venvs/omlx/` |
 | `mlx-audio` | `mlx_audio_wrapper.py` | `audio` → `~/.local/share/mlx/venvs/audio/` |
 | `mflux` | `mflux_wrapper.py` | `image` → `~/.local/share/mlx/venvs/image/` |
 | `mflux2` | `mflux2_wrapper.py` | `image` → `~/.local/share/mlx/venvs/image/` |
@@ -277,6 +279,12 @@ Notes:
 - The response `model` field is MTPLX's own id, not the router alias.
 - A self-built abliterated checkpoint does NOT work by symlinking trunk shards next to the pack's `ngram-table.safetensors`/`mtp.safetensors`: it loads but emits garbage (tried Nov 2026). A proper `mtplx forge` conversion is the untested route.
 
+**`omlx` (oMLX Lightning MTP, opt-in; the uncensored path)** - serves oQ*e-mtp checkpoints (embedded MTP head, standard layout) such as `latent-variable/Qwen3.8-Flash-Next-heretic-2-oQ4e-mtp`. oMLX forces the PLE table onto SSD (mmap) by itself: loaded ~71 GB, peak ~75 GB, so `memory_gb: 80`. Measured Nov 2026 vs MTPLX/zoo: decode 66-78 short / ~70 @8k / 70-74 @24k, code/JSON 100-117 (MTPLX is faster on short prompts, similar at depth). Gotchas:
+- oMLX is not on PyPI: `Omlx.packages` pins a git commit and `Omlx.build_env` sets `OMLX_WITH_CUSTOM_KERNEL=1` for the pip install (`provision_env` merges `build_env` of every backend sharing the env). The kernel build needs the Xcode Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`); it also pins `mlx==0.32.4` and a git `mlx-lm`, hence its own env.
+- It serves every subdirectory of `--model-dir` and addresses a model by directory name. `Omlx.build_args` therefore creates `~/.local/share/mlx/omlx/<alias>/models/<alias>` (symlink to the HF snapshot, resolved offline) with a private `--base-path`, and `transform_request` sets `body["model"]` to the alias, not `source`. Pre-download the checkpoint with `hf download`.
+- The paged SSD KV cache is capped (`Omlx.SSD_CACHE_MAX`, 32GB) and lives under the alias dir; oMLX's default is unbounded.
+- Keep the plain trunk-only abliterated variants away from it: it needs the MTP head in the checkpoint.
+
 **Gemma 4 repetition collapse** — separate structural bug triggered by large system prompts (>10K chars) or many tool definitions (>5-6). Not fixable with `repetition_penalty`. Gemma is excluded from opencode; use via Pi harness or direct curl.
 
 **Qwen3 tool-call parser (AutoToolParser cross-contamination)** — Without `--enable-auto-tool-choice --tool-call-parser qwen`, vllm-mlx falls back to `AutoToolParser("auto")` which tries the Gemma4 format (`<|tool_call>`) *first*. When qwen3.6-moe occasionally generates `<|tool_call>` format (4-bit quantization artifact), the Gemma4 parser fires and fails silently — the tool call content is suppressed, Pi sees the stream end without a `finish_reason`, and reports "output stopped". **Fix**: all Qwen models have `--enable-auto-tool-choice --tool-call-parser qwen` in `extra_args`, which uses `QwenToolParser` directly. The router also normalizes `<|tool_call>` → `<tool_call>` / `<tool_call|>` → `</tool_call>` in assistant message history for non-multimodal models, breaking the feedback loop where Pi stores the malformed content and the model imitates the wrong format.
@@ -287,5 +295,5 @@ Notes:
 
 ## External integrations
 
-- **opencode**: `~/.config/opencode/opencode.jsonc` — `mlx` provider (port 6300), all chat models, default `qwen3.8-flash-next-ple`. Written in the opencode 2 format (`providers`/`package`/`settings`/`capabilities`; opencode 1.x ignored `providers`, and 2.x auto-migrates the legacy `provider` key but drops `reasoning`/`temperature`). To test a config without touching the real router use `OPENCODE_CONFIG=... opencode run --standalone` (the default background service ignores it). Sets no sampling params, so the router's per-model `defaults` apply. New chat models in models.yaml must be added there by hand
+- **opencode**: `~/.config/opencode/opencode.jsonc` — `mlx` provider (port 6300), all chat models, default `qwen3.8-flash-next-mtplx`. Written in the opencode 2 format (`providers`/`package`/`settings`/`capabilities`; opencode 1.x ignored `providers`, and 2.x auto-migrates the legacy `provider` key but drops `reasoning`/`temperature`). To test a config without touching the real router use `OPENCODE_CONFIG=... opencode run --standalone` (the default background service ignores it). Sets no sampling params, so the router's per-model `defaults` apply. New chat models in models.yaml must be added there by hand
 - **Pi harness**: `~/.pi/agent/models.json` — `mlx-router` provider, all models including Gemma4

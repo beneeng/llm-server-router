@@ -21,7 +21,7 @@ from mlx_server.config import ModelConfig
 
 def test_registry_keys():
     assert set(BACKENDS) == {
-        "mlx-lm", "mlx-vlm", "mlx-vlm-dsv4", "mlx-vlm-zoo", "mtplx", "mlx-audio", "mflux", "mflux2", "mflux-ideogram",
+        "mlx-lm", "mlx-vlm", "mlx-vlm-dsv4", "mlx-vlm-zoo", "mtplx", "omlx", "mlx-audio", "mflux", "mflux2", "mflux-ideogram",
     }
 
 
@@ -310,3 +310,93 @@ def test_mtplx_transform_keeps_thinking_controls_and_drops_internal_budget():
     assert body["enable_thinking"] is False
     assert body["chat_template_kwargs"] == {"enable_thinking": False}
     assert "thinking_token_budget" not in body
+
+
+# ── omlx ──────────────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def omlx_setup(tmp_path, monkeypatch):
+    import mlx_server.manager as manager
+
+    monkeypatch.setattr(manager, "STATE_DIR", tmp_path / "state")
+    ckpt = tmp_path / "ckpt"
+    ckpt.mkdir()
+    m = ModelConfig(name="unc", source=str(ckpt), backend="omlx", port=6307)
+    backend = m.resolve_backend()
+    monkeypatch.setattr(backend, "python", lambda: "/venv/bin/python3", raising=False)
+    return m, backend, ckpt, tmp_path / "state" / "omlx" / "unc"
+
+
+def test_omlx_env_pinned_commit_and_kernel_build():
+    b = BACKENDS["omlx"]
+    assert b.env == "omlx"
+    # not on PyPI: pinned to a commit, and the custom Metal kernels must be built
+    assert any(p.startswith("omlx @ git+") and p.endswith(b.COMMIT) for p in b.packages)
+    assert b.build_env == {"OMLX_WITH_CUSTOM_KERNEL": "1"}
+    assert b.modalities == frozenset({"text"})
+
+
+def test_omlx_argv_serves_a_private_model_dir_named_after_the_alias(omlx_setup):
+    m, backend, ckpt, root = omlx_setup
+    args = backend.build_args(m, 6307)
+    assert args[:2] == ["/venv/bin/omlx", "serve"]
+    assert args[args.index("--model-dir") + 1] == str(root / "models")
+    assert args[args.index("--base-path") + 1] == str(root / "home")
+    assert args[args.index("--port") + 1] == "6307"
+    assert args[args.index("--host") + 1] == "127.0.0.1"
+    assert "--headless" in args
+    # the SSD KV cache is bounded and per model
+    assert args[args.index("--paged-ssd-cache-dir") + 1] == str(root / "ssd-cache")
+    assert args[args.index("--paged-ssd-cache-max-size") + 1] == BACKENDS["omlx"].SSD_CACHE_MAX
+    link = root / "models" / "unc"
+    assert link.is_symlink() and link.resolve() == ckpt.resolve()
+
+
+def test_omlx_relinks_when_the_checkpoint_moves(omlx_setup, tmp_path):
+    m, backend, ckpt, root = omlx_setup
+    backend.build_args(m, 6307)
+    other = tmp_path / "other"
+    other.mkdir()
+    m.source = str(other)
+    backend.build_args(m, 6307)
+    assert (root / "models" / "unc").resolve() == other.resolve()
+
+
+def test_omlx_extra_args_come_last(omlx_setup):
+    m, backend, _, _ = omlx_setup
+    m.extra_args = ["--log-level", "debug"]
+    assert backend.build_args(m, 6307)[-2:] == ["--log-level", "debug"]
+
+
+def test_omlx_missing_hf_checkpoint_fails_with_download_hint(tmp_path, monkeypatch):
+    import mlx_server.manager as manager
+
+    monkeypatch.setattr(manager, "STATE_DIR", tmp_path / "state")
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "empty-hf"))
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    m = ModelConfig(name="unc", source="nobody/not-downloaded", backend="omlx", port=6307)
+    with pytest.raises(FileNotFoundError, match="hf download nobody/not-downloaded"):
+        BACKENDS["omlx"].checkpoint_dir(m)
+
+
+def test_omlx_transform_addresses_model_by_alias_and_drops_internal_budget():
+    m = ModelConfig(name="unc", source="some/repo", backend="omlx")
+    body = {"model": "some/repo", "thinking_token_budget": 512, "enable_thinking": False, "messages": []}
+    m.resolve_backend().transform_request(body, m)
+    assert body["model"] == "unc"
+    assert body["enable_thinking"] is False
+    assert "thinking_token_budget" not in body
+
+
+def test_provision_env_passes_the_backend_build_env_to_pip(tmp_path, monkeypatch):
+    import mlx_server.manager as manager
+
+    monkeypatch.setattr(manager, "VENV_DIR", tmp_path)
+    calls = []
+    monkeypatch.setattr(manager.subprocess, "run", lambda cmd, **kw: calls.append((cmd, kw)))
+    manager.provision_env("omlx", ["omlx"])
+    pip_call = [kw for cmd, kw in calls if cmd[-1] == "omlx" and "install" in cmd][0]
+    assert pip_call["env"]["OMLX_WITH_CUSTOM_KERNEL"] == "1"
+    calls.clear()
+    manager.provision_env("audio", ["mlx-audio"])
+    assert "OMLX_WITH_CUSTOM_KERNEL" not in calls[-1][1]["env"]

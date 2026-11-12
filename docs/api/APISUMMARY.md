@@ -34,6 +34,8 @@ curl -X POST http://localhost:6300/v1/chat/completions \
 
 **`backend: mtplx`** (Qwen3.8-Flash-Next, isolated env) is the MTPLX server with native MTP speculative decoding. It accepts the same OpenAI chat fields; `enable_thinking` and `chat_template_kwargs` work natively (reasoning comes back in `reasoning_content`), tool calls are returned as standard `tool_calls`, and the internal `thinking_token_budget` is dropped by the router. The response `model` field carries MTPLX's own id (`mtplx-flash-next-optimized-speed`), not the router alias. The pack must be pre-downloaded.
 
+**`backend: omlx`** (Qwen3.8-Flash-Next oQ*e-mtp checkpoints with an embedded MTP head, isolated env) is the oMLX server with Lightning MTP and automatic PLE-to-SSD offload. It accepts the same OpenAI chat fields; `enable_thinking` / `chat_template_kwargs` work natively and the router drops the internal `thinking_token_budget`. oMLX addresses the model by directory name, so the router rewrites `model` to the alias instead of `source`. The checkpoint must be pre-downloaded.
+
 **`backend: mlx-vlm-zoo`** is `mlx-vlm` with unsloth-zoo's qwen4_exp decode fusions (faster decode/prefill, isolated env). The HTTP surface, request fields and router transforms are identical to `mlx-vlm`; output tokens can differ slightly from stock at the same seed.
 
 **Image input** (VLM only): Use `{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}` content blocks. Text-only models return 400.

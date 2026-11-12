@@ -734,7 +734,7 @@ components:
           description: >
             Enable/disable thinking mode (mlx-lm / Gemma4 / DeepSeek-V4).
             False is moved into `chat_template_kwargs` by the router for
-            mlx-lm; mlx-vlm, mlx-vlm-zoo, mlx-vlm-dsv4 and mtplx read it natively.
+            mlx-lm; mlx-vlm, mlx-vlm-zoo, mlx-vlm-dsv4, mtplx and omlx read it natively.
         chat_template_kwargs:
           type: object
           description: Passed through to the tokenizer for mlx-lm; stripped for mlx-vlm

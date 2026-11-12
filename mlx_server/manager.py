@@ -75,7 +75,13 @@ def provision_env(env: str, packages: Sequence[str], log_fh: IO[str] | None = No
     subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True, **redirect)
     pip = venv_dir / "bin" / "pip"
     _say(f"[mlx] installing into '{env}': {' '.join(packages)}")
-    subprocess.run([str(pip), "install", "--upgrade", *packages], check=True, **redirect)
+    from .backends import BACKENDS
+
+    build_env = {k: v for b in BACKENDS.values() if b.env == env for k, v in b.build_env.items()}
+    subprocess.run(
+        [str(pip), "install", "--upgrade", *packages],
+        check=True, env={**os.environ, **build_env}, **redirect,
+    )
     _say(f"[mlx] backend env '{env}' ready")
 
 

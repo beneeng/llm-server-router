@@ -36,6 +36,8 @@ class Backend:
     env: str = "main"
     # pip packages installed into the isolated env. Empty when env == "main".
     packages: tuple[str, ...] = ()
+    # Extra environment for the pip install of `packages` (e.g. a build-time flag).
+    build_env: dict[str, str] = {}
     # Wrapper script filename, resolved relative to this package directory.
     wrapper: str = ""
     # Output modalities this engine produces.
@@ -244,6 +246,82 @@ class Mtplx(Backend):
         body.pop("thinking_token_budget", None)
 
 
+class Omlx(Backend):
+    """Qwen3.8-Flash-Next via oMLX (Lightning MTP, automatic PLE mmap offload).
+
+    oMLX is its own OpenAI-compatible server; `omlx serve` is the tracked process.
+    It serves every subdirectory of a `--model-dir` and addresses a model by its
+    directory name, so each router model gets a private model dir holding one
+    symlink named after the alias, plus a private `--base-path` (settings, caches,
+    logs). `source` is a local checkpoint dir or an HF repo id that must already be
+    in the HF cache (`hf download <repo>`): a first-start download would blow the
+    port timeout. The checkpoint must carry an embedded MTP head (oQ*e-mtp repos).
+
+    oMLX is not on PyPI, so the env installs a pinned git commit. The custom Metal
+    kernels (much faster than the generic fallbacks for this model family) are only
+    built when OMLX_WITH_CUSTOM_KERNEL=1, which needs the Xcode Metal Toolchain
+    (`xcodebuild -downloadComponent MetalToolchain`); without it the install fails
+    loudly rather than silently serving slow.
+    """
+
+    name = "omlx"
+    env = "omlx"
+    COMMIT = "dbbfa6195cf77a6dc421fe9e3f2c573e9788447d"
+    packages = (f"omlx @ git+https://github.com/jundot/omlx@{COMMIT}",)
+    build_env = {"OMLX_WITH_CUSTOM_KERNEL": "1"}
+    modalities = frozenset({"text"})
+    accepts_image_input = True
+
+    # Cap for the paged SSD KV cache (oMLX's default is unbounded). Same reasoning
+    # as APC_DISK_MAX_GB.
+    SSD_CACHE_MAX = "32GB"
+
+    @staticmethod
+    def checkpoint_dir(model: "ModelConfig") -> Path:
+        """Resolve `source` to a local directory without touching the network."""
+        local = Path(model.source).expanduser()
+        if local.is_dir():
+            return local.resolve()
+        from huggingface_hub import snapshot_download
+
+        try:
+            return Path(snapshot_download(model.source, local_files_only=True))
+        except Exception as exc:
+            raise FileNotFoundError(
+                f"{model.source} is not in the HF cache; run `hf download {model.source}` first"
+            ) from exc
+
+    def build_args(self, model: "ModelConfig", port: int) -> list[str]:
+        from .manager import STATE_DIR
+
+        root = STATE_DIR / "omlx" / model.name
+        models_dir = root / "models"
+        models_dir.mkdir(parents=True, exist_ok=True)
+        link = models_dir / model.name
+        target = self.checkpoint_dir(model)
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(target)
+        omlx_bin = str(Path(self.python()).parent / "omlx")
+        return [
+            omlx_bin, "serve",
+            "--model-dir", str(models_dir),
+            "--base-path", str(root / "home"),
+            "--host", "127.0.0.1",
+            "--port", str(port),
+            "--headless",
+            "--memory-guard", "safe",
+            "--paged-ssd-cache-dir", str(root / "ssd-cache"),
+            "--paged-ssd-cache-max-size", self.SSD_CACHE_MAX,
+            *model.extra_args,
+        ]
+
+    def transform_request(self, body: dict, model: "ModelConfig") -> None:
+        # oMLX addresses the model by its directory name (= the alias), not by source.
+        body["model"] = model.name
+        body.pop("thinking_token_budget", None)
+
+
 class MlxAudio(Backend):
     """TTS / STT via mlx-audio (isolated venv)."""
 
@@ -302,5 +380,5 @@ class MfluxIdeogram(Backend):
 
 BACKENDS: dict[str, Backend] = {
     b.name: b
-    for b in (MlxLm(), MlxVlm(), MlxVlmDsv4(), MlxVlmZoo(), Mtplx(), MlxAudio(), Mflux(), Mflux2(), MfluxIdeogram())
+    for b in (MlxLm(), MlxVlm(), MlxVlmDsv4(), MlxVlmZoo(), Mtplx(), Omlx(), MlxAudio(), Mflux(), Mflux2(), MfluxIdeogram())
 }

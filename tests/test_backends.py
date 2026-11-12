@@ -21,7 +21,7 @@ from mlx_server.config import ModelConfig
 
 def test_registry_keys():
     assert set(BACKENDS) == {
-        "mlx-lm", "mlx-vlm", "mlx-vlm-dsv4", "mlx-vlm-zoo", "mlx-audio", "mflux", "mflux2", "mflux-ideogram",
+        "mlx-lm", "mlx-vlm", "mlx-vlm-dsv4", "mlx-vlm-zoo", "mtplx", "mlx-audio", "mflux", "mflux2", "mflux-ideogram",
     }
 
 
@@ -259,3 +259,54 @@ def test_zoo_argv_and_inherited_apc_env():
     assert "--enable-thinking" in argv and "--trust-remote-code" in argv
     env = _zoo().resolve_backend().env_vars(_zoo())
     assert env["APC_ENABLED"] == "1" and env["APC_DISK_PATH"].endswith("apc/fn")
+
+
+# ── mtplx ─────────────────────────────────────────────────────────────────────
+
+def test_mtplx_env_and_packages():
+    b = BACKENDS["mtplx"]
+    assert b.env == "mtplx"
+    # pinned: MTPLX's server flags and the on-disk pack contract change between releases
+    assert any(p.startswith("mtplx==") for p in b.packages)
+    assert b.modalities == frozenset({"text"})
+    assert b.accepts_image_input is True
+
+
+def test_mtplx_argv_launches_serve_from_the_env_bin_dir():
+    m = ModelConfig(name="flash", source="Youssofal/Qwen3.8-Flash-Next-MTPLX-Optimized-Speed",
+                    backend="mtplx", port=6306)
+    backend = m.resolve_backend()
+    backend.python = lambda: "/venv/bin/python3"  # type: ignore[method-assign]
+    try:
+        args = backend.build_args(m, 6306)
+    finally:
+        del backend.python
+    assert args[:2] == ["/venv/bin/mtplx", "serve"]
+    assert ["--model", "Youssofal/Qwen3.8-Flash-Next-MTPLX-Optimized-Speed"] == args[2:4]
+    assert args[args.index("--port") + 1] == "6306"
+    assert args[args.index("--host") + 1] == "127.0.0.1"
+    assert "--no-auth" in args and "--yes" in args
+    # the session cache is bounded and per model, never the default ~/.mtplx location
+    assert args[args.index("--ssd-session-cache-dir") + 1].endswith("mtplx-cache/flash")
+    assert args[args.index("--ssd-session-cache-max-size") + 1] == "32GB"
+
+
+def test_mtplx_extra_args_come_last():
+    m = ModelConfig(name="f", source="s", backend="mtplx", port=6306, extra_args=["--depth", "4"])
+    backend = m.resolve_backend()
+    backend.python = lambda: "/venv/bin/python3"  # type: ignore[method-assign]
+    try:
+        args = backend.build_args(m, 6306)
+    finally:
+        del backend.python
+    assert args[-2:] == ["--depth", "4"]
+
+
+def test_mtplx_transform_keeps_thinking_controls_and_drops_internal_budget():
+    m = ModelConfig(name="f", source="s", backend="mtplx")
+    body = {"enable_thinking": False, "chat_template_kwargs": {"enable_thinking": False},
+            "thinking_token_budget": 512, "messages": []}
+    m.resolve_backend().transform_request(body, m)
+    assert body["enable_thinking"] is False
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "thinking_token_budget" not in body

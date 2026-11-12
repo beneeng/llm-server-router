@@ -32,6 +32,8 @@ curl -X POST http://localhost:6300/v1/chat/completions \
 
 **DeepSeek-V4** (`backend: mlx-vlm-dsv4`, text-only): prompts are built with DeepSeek's reference encoder (the checkpoint's own chat template is a stub without tools). Tool calls come back as standard OpenAI `tool_calls` (parsed from DSML, also when streaming); reasoning is returned in `reasoning_content`. `enable_thinking: false` switches to non-thinking mode; `reasoning_effort: "high"|"max"` is forwarded to the encoder.
 
+**`backend: mtplx`** (Qwen3.8-Flash-Next, isolated env) is the MTPLX server with native MTP speculative decoding. It accepts the same OpenAI chat fields; `enable_thinking` and `chat_template_kwargs` work natively (reasoning comes back in `reasoning_content`), tool calls are returned as standard `tool_calls`, and the internal `thinking_token_budget` is dropped by the router. The response `model` field carries MTPLX's own id (`mtplx-flash-next-optimized-speed`), not the router alias. The pack must be pre-downloaded.
+
 **`backend: mlx-vlm-zoo`** is `mlx-vlm` with unsloth-zoo's qwen4_exp decode fusions (faster decode/prefill, isolated env). The HTTP surface, request fields and router transforms are identical to `mlx-vlm`; output tokens can differ slightly from stock at the same seed.
 
 **Image input** (VLM only): Use `{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}` content blocks. Text-only models return 400.

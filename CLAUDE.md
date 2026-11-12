@@ -24,9 +24,10 @@ first model start** — no manual step is required. To pre-warm them explicitly:
 mlx install audio   # creates ~/.local/share/mlx/venvs/audio/ + installs mlx-audio
 mlx install image   # creates ~/.local/share/mlx/venvs/image/ + installs mflux
 mlx install zoo     # creates ~/.local/share/mlx/venvs/zoo/ + installs unsloth-zoo (pins mlx-vlm 0.7.12)
+mlx install mtplx   # creates ~/.local/share/mlx/venvs/mtplx/ + installs mtplx (pinned)
 mlx install --all   # provisions every optional backend env
 ```
-The install target is a backend **env** name (`audio`, `image`, `zoo`); the package
+The install target is a backend **env** name (`audio`, `image`, `zoo`, `mtplx`); the package
 lists are derived from `backends.BACKENDS`, not hardcoded in the CLI.
 
 Do NOT add `mflux` or `mlx-audio` to `pyproject.toml` — they will break `uv sync`.
@@ -109,6 +110,7 @@ Models reference a backend by name (`backend:` in models.yaml). To add a modalit
 | `mlx-vlm` | `mlx_vlm_wrapper.py` | `main` (tool venv) |
 | `mlx-vlm-dsv4` | `mlx_vlm_dsv4_wrapper.py` | `main` (tool venv) |
 | `mlx-vlm-zoo` | `mlx_vlm_zoo_wrapper.py` | `zoo` → `~/.local/share/mlx/venvs/zoo/` |
+| `mtplx` | none (`mtplx serve` is launched directly) | `mtplx` → `~/.local/share/mlx/venvs/mtplx/` |
 | `mlx-audio` | `mlx_audio_wrapper.py` | `audio` → `~/.local/share/mlx/venvs/audio/` |
 | `mflux` | `mflux_wrapper.py` | `image` → `~/.local/share/mlx/venvs/image/` |
 | `mflux2` | `mflux2_wrapper.py` | `image` → `~/.local/share/mlx/venvs/image/` |
@@ -267,6 +269,13 @@ Notes:
 - **MTP stays off**: in every variant (stock or zoo engine) the MTP drafter is slower than no drafter at 8k+ context.
 - Peak memory is ~2 GB above stock; size `memory_gb` accordingly.
 - Benchmarks: `scripts/bench_unsloth_zoo.py`, `scripts/bench_unsloth_zoo_mtp.py` (run under the zoo env python, `mlx stop` first).
+
+**`mtplx` (MTPLX native MTP decoding, opt-in)** - serves Qwen3.8-Flash-Next from the MTPLX pack (`Youssofal/Qwen3.8-Flash-Next-MTPLX-Optimized-Speed`, ~100 GB, pre-download with `hf download`: a first-start download exceeds the 120 s port timeout). `Mtplx.build_args` runs `mtplx serve` from the env's bin dir (it execs into the server, so the tracked pid is the server). MTPLX streams its 29.8 GiB n-gram table from SSD itself: resident weights ~77 GB, footprint 84 GB at 24k, hence `memory_gb: 86`. Measured on this box (M5 Max, Nov 2026) vs the zoo backend: decode 80-92 vs 62 tok/s short, 69-75 vs 55 at 8k, 68-79 vs 49 at 24k. Gotchas:
+- Version is pinned (`mtplx==2.12.3`); its server flags and pack contract move between releases.
+- MTPLX has its own free-memory floor (5.3 GiB) and answers `insufficient_memory` (HTTP 5xx) when a prefill would push the Mac into compression; the router's `memory_gb` check does not replace it.
+- Its persistent session cache defaults to up to 100 GB under `~/.mtplx`; we point it to `~/.local/share/mlx/mtplx-cache/<name>` capped at 32 GB.
+- The response `model` field is MTPLX's own id, not the router alias.
+- A self-built abliterated checkpoint does NOT work by symlinking trunk shards next to the pack's `ngram-table.safetensors`/`mtp.safetensors`: it loads but emits garbage (tried Nov 2026). A proper `mtplx forge` conversion is the untested route.
 
 **Gemma 4 repetition collapse** — separate structural bug triggered by large system prompts (>10K chars) or many tool definitions (>5-6). Not fixable with `repetition_penalty`. Gemma is excluded from opencode; use via Pi harness or direct curl.
 

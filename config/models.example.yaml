@@ -198,6 +198,30 @@ models:
       repetition_penalty: 1.0
       max_tokens: 16384
 
+  # ── Qwen3.8-Flash-Next via MTPLX (native MTP speculative decoding) ─────────
+  # Same model as qwen3.8-flash-next-ple, served by MTPLX (backend `mtplx`,
+  # isolated env, `mlx install mtplx`). Its pack ships the 29.8 GiB n-gram table
+  # as a sidecar that MTPLX streams from SSD (resident weights ~77 GB, footprint
+  # 84 GB at 24k context). Measured on this box (Nov 2026, M5 Max, 2 runs each),
+  # decode tok/s vs the zoo backend: short 80-92 vs 62, 8k 69-75 vs 55, 24k
+  # 68-79 vs 49; code/JSON prompts 97-122. Pre-download the pack, a first-start
+  # download would exceed the 120 s port timeout:
+  #   hf download Youssofal/Qwen3.8-Flash-Next-MTPLX-Optimized-Speed
+  # Only one of the two Flash-Next entries fits in RAM at a time (the memory
+  # manager evicts the other). Sampling params as for qwen3.8-flash-next-ple.
+  - name: qwen3.8-flash-next-mtplx
+    source: Youssofal/Qwen3.8-Flash-Next-MTPLX-Optimized-Speed
+    backend: mtplx
+    thinking: true
+    lazy: true
+    memory_gb: 86  # measured footprint 84 GB at 24k context (MTPLX's own engine budget is 90 GB)
+    defaults:
+      temperature: 1.0
+      top_p: 0.95
+      top_k: 20
+      repetition_penalty: 1.0
+      max_tokens: 16384
+
   # ── Gemma 4 31B dense ──────────────────────────────────────────────────────
   # z-lab DFlash is NOT suitable here — it targets non-QAT google/gemma-4-31B-it.
   - name: gemma4-31b

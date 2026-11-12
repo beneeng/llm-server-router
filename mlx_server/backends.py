@@ -201,6 +201,49 @@ class MlxVlmZoo(MlxVlm):
     wrapper = "mlx_vlm_zoo_wrapper.py"
 
 
+class Mtplx(Backend):
+    """Qwen3.8-Flash-Next via MTPLX (native MTP speculative decoding, isolated env).
+
+    MTPLX is its own OpenAI-compatible server, so there is no wrapper script: the
+    subprocess is `mtplx serve`, which execs into the server (the pid we track is
+    the server). The 29.8 GiB n-gram table is streamed from SSD by MTPLX itself,
+    so resident weights stay at ~77 GB. The model must already be downloaded
+    (`hf download <repo>`): a first-start download would blow the port timeout.
+    Pinned because the CLI flags and the pack contract change between releases.
+    """
+
+    name = "mtplx"
+    env = "mtplx"
+    packages = ("mtplx==2.12.3",)
+    modalities = frozenset({"text"})
+    accepts_image_input = True
+
+    # Soft cap for the persistent session cache (MTPLX's default is "auto", up to
+    # 100 GB per model, written under ~/.mtplx). Same reasoning as APC_DISK_MAX_GB.
+    SESSION_CACHE_MAX = "32GB"
+
+    def build_args(self, model: "ModelConfig", port: int) -> list[str]:
+        from .manager import STATE_DIR
+
+        mtplx_bin = str(Path(self.python()).parent / "mtplx")
+        return [
+            mtplx_bin, "serve",
+            "--model", model.source,
+            "--host", "127.0.0.1",
+            "--port", str(port),
+            "--no-auth", "--yes",
+            "--ssd-session-cache-dir", str(STATE_DIR / "mtplx-cache" / model.name),
+            "--ssd-session-cache-max-size", self.SESSION_CACHE_MAX,
+            *model.extra_args,
+        ]
+
+    def transform_request(self, body: dict, model: "ModelConfig") -> None:
+        # MTPLX reads enable_thinking / chat_template_kwargs natively (verified:
+        # both forms switch reasoning off). thinking_token_budget is our internal
+        # field and means nothing to it.
+        body.pop("thinking_token_budget", None)
+
+
 class MlxAudio(Backend):
     """TTS / STT via mlx-audio (isolated venv)."""
 
@@ -259,5 +302,5 @@ class MfluxIdeogram(Backend):
 
 BACKENDS: dict[str, Backend] = {
     b.name: b
-    for b in (MlxLm(), MlxVlm(), MlxVlmDsv4(), MlxVlmZoo(), MlxAudio(), Mflux(), Mflux2(), MfluxIdeogram())
+    for b in (MlxLm(), MlxVlm(), MlxVlmDsv4(), MlxVlmZoo(), Mtplx(), MlxAudio(), Mflux(), Mflux2(), MfluxIdeogram())
 }

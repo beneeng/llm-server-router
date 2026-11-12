@@ -61,6 +61,7 @@ mlx memory                    # per-model RSS, system RAM, LRU cap status
 mlx models                    # list all models from config with defaults
 mlx install audio             # pre-warm the audio backend venv (mlx-audio)
 mlx install image             # pre-warm the image backend venv (mflux)
+mlx install mtplx             # pre-warm the MTPLX backend venv (mtplx)
 mlx install --all             # pre-warm every optional backend venv
 ```
 
@@ -110,7 +111,7 @@ server:
 models:
   - name: my-llm               # alias used by clients
     source: org/repo-id        # HuggingFace model ID
-    backend: mlx-vlm           # mlx-lm | mlx-vlm | mlx-vlm-dsv4 | mlx-audio | mflux  (default: mlx-lm)
+    backend: mlx-vlm           # mlx-lm | mlx-vlm | mlx-vlm-dsv4 | mtplx | mlx-audio | mflux  (default: mlx-lm)
     # multimodal: true         # optional: override image-input support; omit to use
                                #   the backend's own capability (mlx-vlm already accepts images)
     mtp: false                 # true → MTP speculative decoding active

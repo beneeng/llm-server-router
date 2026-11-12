@@ -26,6 +26,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -68,7 +69,7 @@ def _stop(proc: subprocess.Popen) -> None:
         proc.wait(timeout=10)
 
 
-MAX_SWAP_USED_GB = 3.0
+MAX_SWAP_GROWTH_GB = 3.0  # abort when swap grows this much beyond its level at variant start
 GUARD_WAIT_SECONDS = 90.0  # macOS releases a stopped backend's memory with a delay
 
 
@@ -79,13 +80,24 @@ def memory_guard(model_cfg, min_free_gb: float) -> str | None:
     a model that does not fit pushes the machine into swap and freezes it.
     """
     available = psutil.virtual_memory().available / 2**30
-    swap_used = psutil.swap_memory().used / 2**30
-    if swap_used > MAX_SWAP_USED_GB:
-        return f"swap already {swap_used:.1f} GB used (limit {MAX_SWAP_USED_GB:.0f}); reboot or free memory first"
     if available - model_cfg.memory_gb < min_free_gb:
         return (f"{available:.1f} GB available - {model_cfg.memory_gb} GB model "
                 f"would leave less than {min_free_gb:.0f} GB free")
     return None
+
+
+def _swap_watchdog(proc: subprocess.Popen, baseline_gb: float, stop: threading.Event, tripped: list) -> None:
+    """Kill the backend when swap grows more than MAX_SWAP_GROWTH_GB over its starting level.
+
+    Stale swap from earlier runs is harmless; only growth caused by this model matters.
+    """
+    while not stop.wait(2.0):
+        grown = psutil.swap_memory().used / 2**30 - baseline_gb
+        if grown > MAX_SWAP_GROWTH_GB:
+            tripped.append(grown)
+            print(f"\n  SWAP GUARD: swap grew {grown:.1f} GB, killing backend", file=sys.stderr)
+            _stop(proc)
+            return
 
 
 def run_variant(model_cfg, label: str, extra: list[str], args: argparse.Namespace) -> dict | None:
@@ -116,6 +128,9 @@ def run_variant(model_cfg, label: str, extra: list[str], args: argparse.Namespac
 
     with open(log_path, "w") as log_fh:
         proc = subprocess.Popen(argv, env=env, stdout=log_fh, stderr=subprocess.STDOUT)
+        stop_wd, tripped = threading.Event(), []
+        threading.Thread(target=_swap_watchdog, daemon=True,
+                         args=(proc, psutil.swap_memory().used / 2**30, stop_wd, tripped)).start()
         try:
             print(f"  waiting for port {args.port} (up to {args.startup_timeout:.0f}s)...")
             _wait_for_port(args.port, proc, args.startup_timeout)
@@ -135,7 +150,11 @@ def run_variant(model_cfg, label: str, extra: list[str], args: argparse.Namespac
             print(f"  see {log_path}", file=sys.stderr)
             return None
         finally:
+            stop_wd.set()
             _stop(proc)
+    if tripped:
+        print(f"  ABORTED: swap grew {tripped[0]:.1f} GB", file=sys.stderr)
+        return None
     return {"label": label}
 
 

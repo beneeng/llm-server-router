@@ -145,7 +145,7 @@ paths:
 
   # ────────────────────── Dashboard (read-only, GET only) ──────────────────────
   # Numbers and settings only. Prompts and responses are never stored or shown:
-  # request metrics come from the mlx-vlm backends' own content-free `/v1/metrics`
+  # request metrics come from the mlx-vlm (`/v1/metrics`) and mtplx (`/metrics`) backends' own content-free endpoints
   # and are kept in SQLite (~/.local/share/mlx/metrics.db) across restarts.
   # No authentication: the router listens on 127.0.0.1 by default.
   # All of these return 404 unless `dashboard_enabled: true` (opt-in, default false).

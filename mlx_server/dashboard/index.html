@@ -189,13 +189,13 @@ const fmtBytes = (b) => b >= 1e9 ? fmt(b / 1e9, 1) + " GB" : b >= 1e6 ? fmt(b / 
 const median = (xs) => { const a = xs.filter((x) => x != null).sort((p, q) => p - q); return a.length ? a[Math.floor((a.length - 1) / 2)] : null; };
 
 // ── colour follows the model, never its rank in the current view ─────────────
-// Slot = position among mlx-vlm models in config order (only they report per-request speeds).
+// Slot = position among metrics-reporting models in config order (only they report per-request speeds).
 // Beyond the sixth slot a model is drawn in the neutral "other" tone.
 function assignSlots() {
   state.slots.clear();
   let i = 0;
   for (const m of (state.config?.models || [])) {
-    if (!m.backend.startsWith("mlx-vlm")) continue;
+    if (!m.reports_metrics) continue;
     state.slots.set(m.name, i < SERIES_VARS.length ? SERIES_VARS[i] : "--other");
     i++;
   }
@@ -229,7 +229,7 @@ async function refresh() {
 }
 function fillModelFilter() {
   const sel = $("f-model"), cur = sel.value;
-  const names = state.config.models.filter((m) => m.backend.startsWith("mlx-vlm")).map((m) => m.name);
+  const names = state.config.models.filter((m) => m.reports_metrics).map((m) => m.name);
   if (sel.options.length - 1 === names.length) return;
   sel.replaceChildren(el("option", { value: "" }, "All models"), ...names.map((n) => el("option", { value: n }, n)));
   sel.value = cur;

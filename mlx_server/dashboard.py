@@ -58,6 +58,7 @@ def _model_view(model: ModelConfig) -> dict:
         "source": model.source,
         "backend": model.backend,
         "modality": model.modality,
+        "reports_metrics": model.resolve_backend().metrics_path is not None,
         "accepts_image_input": model.accepts_image_input,
         "thinking": model.thinking,
         "mtp": model.mtp,

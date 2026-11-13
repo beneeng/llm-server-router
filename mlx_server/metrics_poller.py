@@ -1,4 +1,6 @@
-"""Collects per-request metrics from running mlx-vlm backends into the MetricsStore.
+"""Collects per-request metrics from running backends into the MetricsStore.
+
+Backends opt in via `Backend.metrics_path` (mlx-vlm, mtplx).
 
 mlx-vlm already records a content-free metrics envelope per finished request and
 serves the last 32 at `GET /v1/metrics`. The router never reads response bytes
@@ -52,21 +54,23 @@ def _drafter_of(model: ModelConfig) -> str | None:
 
 
 def _has_metrics_endpoint(model: ModelConfig) -> bool:
-    return model.resolve_backend().name.startswith("mlx-vlm")
+    return model.resolve_backend().metrics_path is not None
 
 
 def _poll(model: ModelConfig, store: MetricsStore) -> int:
-    payload = _fetch_metrics(f"http://127.0.0.1:{model.port}/v1/metrics")
+    backend = model.resolve_backend()
+    payload = _fetch_metrics(f"http://127.0.0.1:{model.port}{backend.metrics_path}")
     if payload is None:
         return 0
     recent = payload.get("recent")
     if not isinstance(recent, list):
         return 0
-    return store.insert_many(model.name, recent, drafter=_drafter_of(model))
+    envelopes = [backend.metrics_envelope(r) for r in recent if isinstance(r, dict)]
+    return store.insert_many(model.name, envelopes, drafter=_drafter_of(model))
 
 
 def poll_once(cfg: ServerConfig, store: MetricsStore) -> int:
-    """Poll every running mlx-vlm model once. Returns the number of new rows."""
+    """Poll every running metrics-reporting model once. Returns the number of new rows."""
     pids = _load_pids()
     total = 0
     for model in cfg.models:

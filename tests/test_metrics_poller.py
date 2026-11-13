@@ -97,3 +97,26 @@ def test_poll_model_reads_one_model_before_eviction(tmp_path, monkeypatch):
 
     assert poller.poll_model(cfg, store, "vlm-running") == 1
     assert poller.poll_model(cfg, store, "lm-running") == 0  # not an mlx-vlm backend
+
+
+def test_mtplx_records_are_translated_and_leak_no_content(tmp_path, monkeypatch):
+    cfg = ServerConfig(models=[ModelConfig(name="mt", source="org/m", backend="mtplx")])
+    record = {
+        "completed_at_s": 1794562893.7, "prompt_tokens": 46704, "completion_tokens": 173,
+        "prefill_tok_s": 168.3, "decode_tok_s": 63.8, "ttft_s": 6.1, "request_elapsed_s": 8.8,
+        "decode_elapsed_s": 2.7, "peak_memory_bytes": 94_701_949_770, "finish_reason": "tool_calls",
+        "request_enable_thinking": True, "tool_call_count": 1,
+        "request_last_user_preview": "SECRET-PROMPT-MARKER",
+    }
+    fetched: list[str] = []
+    _patch(monkeypatch, {"mt"}, fetched, {"latest": record, "recent": [record]})
+    store = MetricsStore(tmp_path / "m.db")
+
+    assert poller.poll_once(cfg, store) == 1
+
+    assert fetched == [f"http://127.0.0.1:{cfg.model_by_name('mt').port}/metrics"]
+    row = store.recent()[0]
+    assert (row["model"], row["prompt_tokens"], row["decode_tok_s"]) == ("mt", 46704, 63.8)
+    assert row["peak_memory_gb"] == 94.701949770
+    assert (row["thinking"], row["tool_calls"], row["finish_reason"]) == (1, 1, "tool_calls")
+    assert "SECRET-PROMPT-MARKER" not in str(dict(row))

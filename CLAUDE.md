@@ -172,8 +172,8 @@ structural: the router never reads response bytes for metrics. A daemon thread p
 `GET /v1/metrics` (content-free per-request envelopes, last 32) every 5 s plus once in `MemoryManager.before_stop`
 right before an eviction, and `MetricsStore` copies only allow-listed numeric/enum columns into SQLite
 (`~/.local/share/mlx/metrics.db`, dedup on model+ts+tokens, newest `metrics_retention_rows` kept, default 50 000). Text
-columns only accept short enum-like tokens, so a future mlx-vlm text field cannot leak. mlx-lm/audio/image backends have
-no such endpoint; the proxy only tallies POSTs and errors per model (`count_request`/`count_error`, flushed by the
+columns only accept short enum-like tokens, so a future mlx-vlm text field cannot leak. mtplx is polled the same way via its own `GET /metrics` (`Mtplx.metrics_envelope` maps it onto the same allow-listed keys; backends opt in through `Backend.metrics_path`). mlx-lm/omlx/audio/image backends have
+no such endpoint (oMLX only has admin-auth'd aggregates); the proxy only tallies POSTs and errors per model (`count_request`/`count_error`, flushed by the
 poller). The dashboard router is included BEFORE the catch-all proxy route; adding a write route under `/_dashboard`
 is forbidden (a test enforces GET/HEAD only). `prefill_tok_s` is inflated on APC hits (envelope has no cached-token
 count). The feature is opt-in: `dashboard_enabled` defaults to false and gates UI, API, poller and counting. Tests: `test_metrics_store.py`,

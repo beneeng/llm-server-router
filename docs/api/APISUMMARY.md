@@ -135,7 +135,7 @@ All images generated in a single tensor-batched denoising loop. With `?sse=true`
 `http://localhost:6300/_dashboard/` is a technical dashboard: settings, models, live memory, request counts and, for the
 last N requests, prefill and decode tokens/s. **Never prompts or responses**: the numbers come from the mlx-vlm backends'
 own content-free `/v1/metrics` (polled every 5 s, also right before an eviction) and are kept in
-`~/.local/share/mlx/metrics.db`, so they survive restarts. Only mlx-vlm models report per-request speeds; every model
+`~/.local/share/mlx/metrics.db`, so they survive restarts. Only mlx-vlm and mtplx models report per-request speeds (mlx-lm, omlx, audio and image do not); every model
 is counted in `router_counts`. No auth, router listens on 127.0.0.1. Opt-in: set `dashboard_enabled: true` in the server config (default off, everything below returns 404).
 
 ```bash

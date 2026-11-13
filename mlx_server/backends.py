@@ -44,6 +44,13 @@ class Backend:
     modalities: frozenset[str] = frozenset()
     # True if the engine accepts image_url content blocks as input.
     accepts_image_input: bool = False
+    # Path of the backend's own per-request metrics endpoint (polled by
+    # metrics_poller), or None when it has none.
+    metrics_path: str | None = None
+
+    def metrics_envelope(self, raw: dict) -> dict:
+        """Translate one raw metrics record into the store's envelope keys."""
+        return raw
 
     def python(self) -> str:
         """The interpreter that runs this backend's wrapper."""
@@ -113,6 +120,7 @@ class MlxVlm(Backend):
     """Vision-language / thinking text models via mlx_vlm.server."""
 
     name = "mlx-vlm"
+    metrics_path = "/v1/metrics"
     env = "main"
     wrapper = "mlx_vlm_wrapper.py"
     modalities = frozenset({"text"})
@@ -215,6 +223,7 @@ class Mtplx(Backend):
     """
 
     name = "mtplx"
+    metrics_path = "/metrics"
     env = "mtplx"
     packages = ("mtplx==2.12.3",)
     modalities = frozenset({"text"})
@@ -238,6 +247,29 @@ class Mtplx(Backend):
             "--ssd-session-cache-max-size", self.SESSION_CACHE_MAX,
             *model.extra_args,
         ]
+
+    def metrics_envelope(self, raw: dict) -> dict:
+        """Map an MTPLX `/metrics` record onto the keys the store allow-lists.
+
+        MTPLX records carry far more than we keep (including a last-user-message
+        preview); only these numeric/enum fields are copied out.
+        """
+        peak = raw.get("peak_memory_bytes")
+        calls = raw.get("tool_call_count")
+        return {
+            "timestamp_unix": raw.get("completed_at_s"),
+            "prompt_tokens": raw.get("prompt_tokens"),
+            "completion_tokens": raw.get("completion_tokens"),
+            "prefill_tok_s": raw.get("prefill_tok_s"),
+            "decode_tok_s": raw.get("decode_tok_s"),
+            "ttft_s": raw.get("ttft_s"),
+            "request_elapsed_s": raw.get("request_elapsed_s"),
+            "decode_elapsed_s": raw.get("decode_elapsed_s"),
+            "peak_memory_gb": peak / 1e9 if isinstance(peak, (int, float)) else None,
+            "finish_reason": raw.get("finish_reason"),
+            "thinking_enabled": raw.get("request_enable_thinking"),
+            "tool_calls": int(calls > 0) if isinstance(calls, (int, float)) else None,
+        }
 
     def transform_request(self, body: dict, model: "ModelConfig") -> None:
         # MTPLX reads enable_thinking / chat_template_kwargs natively (verified:

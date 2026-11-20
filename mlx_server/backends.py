@@ -19,6 +19,7 @@ This module imports `_bin`/`_backend_python` from `manager` lazily (inside
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -233,6 +234,33 @@ class Mtplx(Backend):
     # 100 GB per model, written under ~/.mtplx). Same reasoning as APC_DISK_MAX_GB.
     SESSION_CACHE_MAX = "32GB"
 
+    # MTPLX's memory guard aborts a prefill when free pages (not "available":
+    # file cache does not count) are under a floor while swap/compressor grow.
+    # Default floor is max(1 GiB, 2.5% RAM, wired/16) = ~6 GiB on this 128 GB Mac
+    # with ~90 GB wired, which trips on healthy prefills when macOS keeps few
+    # free pages. The shed floor (where idle caches are released first) stays at
+    # its default of 2x abort. Lower = fewer refusals, less safety margin: MTPLX
+    # documents kernel panics at ~0.01 GiB free, so keep this well above that.
+    ABORT_FLOOR = "1GiB"
+
+    # The guard's swap-growth line (shipped: 64 MiB/s, a constant, not an env var)
+    # aborted a healthy prefill at ~65 MiB/s. Raised via mtplx_patch/sitecustomize.py.
+    # Documented crashes swapped far slower (~16 MiB/s) but ran the compressor at
+    # 170-340 MiB/s, which keeps its own, untouched rule. NET_SWAP additionally
+    # nets swap growth against compressor shrinkage (compressed pages moving to
+    # swap free RAM, they do not consume it); see the patch module docstring.
+    SWAP_RATE_MIB_S = "128"
+
+    def env_vars(self, model: "ModelConfig") -> dict[str, str]:
+        patch_dir = str(Path(__file__).parent / "mtplx_patch")
+        old = os.environ.get("PYTHONPATH")
+        return {
+            "MTPLX_SYSTEM_MEMORY_ABORT_FLOOR_BYTES": self.ABORT_FLOOR,
+            "MLX_MTPLX_SWAP_RATE_MIB_S": self.SWAP_RATE_MIB_S,
+            "MLX_MTPLX_NET_SWAP": "1",
+            "PYTHONPATH": f"{patch_dir}:{old}" if old else patch_dir,
+        }
+
     def build_args(self, model: "ModelConfig", port: int) -> list[str]:
         from .manager import STATE_DIR
 
@@ -308,6 +336,16 @@ class Omlx(Backend):
     # as APC_DISK_MAX_GB.
     SSD_CACHE_MAX = "32GB"
 
+    # oMLX rejects a prefill when current usage + predicted KV/SDPA peak exceeds
+    # (ceiling - margin). Ceiling = RAM - tier reserve (safe 16 GiB, balanced 8,
+    # aggressive 4); margin = 10 % (safe) / 8 % (balanced) / 3 % (aggressive).
+    # With ~71.5 GiB resident weights, "safe" left a ~73.9 GiB limit, i.e. only
+    # ~2.4 GiB for KV on a 128 GB Mac, and refused healthy prompts. "balanced"
+    # lifts the limit to ~84 GiB (measured peak at 24k is ~75 GiB) while still
+    # leaving ~8 GiB for macOS. "aggressive" (4 GiB reserve) is deliberately
+    # avoided: a locked-up Mac has needed a force-shutdown before.
+    MEMORY_GUARD = "balanced"
+
     @staticmethod
     def checkpoint_dir(model: "ModelConfig") -> Path:
         """Resolve `source` to a local directory without touching the network."""
@@ -342,7 +380,7 @@ class Omlx(Backend):
             "--host", "127.0.0.1",
             "--port", str(port),
             "--headless",
-            "--memory-guard", "safe",
+            "--memory-guard", self.MEMORY_GUARD,
             "--paged-ssd-cache-dir", str(root / "ssd-cache"),
             "--paged-ssd-cache-max-size", self.SSD_CACHE_MAX,
             *model.extra_args,

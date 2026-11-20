@@ -352,6 +352,12 @@ def test_omlx_argv_serves_a_private_model_dir_named_after_the_alias(omlx_setup):
     assert link.is_symlink() and link.resolve() == ckpt.resolve()
 
 
+def test_omlx_memory_guard_tier_is_not_the_too_tight_safe(omlx_setup):
+    m, backend, _, _ = omlx_setup
+    args = backend.build_args(m, 6307)
+    assert args[args.index("--memory-guard") + 1] == backend.MEMORY_GUARD == "balanced"
+
+
 def test_omlx_relinks_when_the_checkpoint_moves(omlx_setup, tmp_path):
     m, backend, ckpt, root = omlx_setup
     backend.build_args(m, 6307)
@@ -400,3 +406,83 @@ def test_provision_env_passes_the_backend_build_env_to_pip(tmp_path, monkeypatch
     calls.clear()
     manager.provision_env("audio", ["mlx-audio"])
     assert "OMLX_WITH_CUSTOM_KERNEL" not in calls[-1][1]["env"]
+
+
+def test_mtplx_env_lowers_abort_floor_and_keeps_guard_on():
+    m = ModelConfig(name="m", source="s", backend="mtplx")
+    env = m.resolve_backend().env_vars(m)
+    assert env["MTPLX_SYSTEM_MEMORY_ABORT_FLOOR_BYTES"] == "1GiB"
+    # the guard itself must stay enabled (kernel panics are documented without it)
+    assert "MTPLX_SYSTEM_MEMORY_GUARD" not in env
+
+
+def test_mtplx_swap_rate_patch_is_wired_and_applies(monkeypatch):
+    import subprocess, sys
+    m = ModelConfig(name="m", source="s", backend="mtplx")
+    monkeypatch.setenv("PYTHONPATH", "/existing")
+    env = m.resolve_backend().env_vars(m)
+    assert env["MLX_MTPLX_SWAP_RATE_MIB_S"] == "128"
+    assert env["PYTHONPATH"].endswith(":/existing")
+    patch_dir = env["PYTHONPATH"].split(":")[0]
+    assert (Path(patch_dir) / "sitecustomize.py").is_file()
+
+    # the real mtplx env: the private constant must still exist and be patched
+    py = BACKENDS["mtplx"].python()
+    if not Path(py).exists():
+        pytest.skip("mtplx env not provisioned")
+    import os
+    out = subprocess.run(
+        [py, "-P", "-c",
+         "from mtplx import system_memory as s; print(s._THRASH_SWAP_BYTES_PER_S)"],
+        env={**os.environ, **env}, capture_output=True, text=True, timeout=120,
+    )
+    assert out.stdout.strip() == str(128 * 1024 * 1024), out.stderr
+    assert "NOT applied" not in out.stderr
+
+
+_GUARD_PROBE = r"""
+import json, sys
+from mtplx import system_memory as sm
+G = 2**30
+def rd(t, free, comp, swap):
+    return sm.SystemMemory(available_bytes=20*G, total_bytes=128*G, level_percent=20,
+        free_bytes=int(free*G), file_backed_bytes=19*G, wired_bytes=93*G,
+        compressor_bytes=int(comp*G), swap_used_bytes=int(swap*G), monotonic_s=t)
+cases = {
+  # user's two real aborts: swap grows while the compressor shrinks by the same amount
+  "swap_from_compressor": (rd(0, 5, 0.59, 9.14), rd(3.215, 0.98, 0.0, 9.71)),
+  "swap_from_compressor_2": (rd(0, 5, 1.5, 9.0), rd(12.663, 0.9, 0.6, 9.8)),
+  # real death pattern: free pages gone, swap AND compressor growing
+  "swap_and_compressor_grow": (rd(0, 5, 0.5, 9.0), rd(3.0, 0.5, 1.5, 9.7)),
+  # swap grows with no compressor shrink at all (kernel writing out other memory)
+  "swap_only_fast": (rd(0, 5, 0.5, 9.0), rd(3.0, 0.5, 0.5, 9.7)),
+}
+print(json.dumps({k: sm.memory_thrashing(r, b) for k, (b, r) in cases.items()}))
+"""
+
+
+def _run_guard_probe(env_extra):
+    import os, subprocess, json
+    py = BACKENDS["mtplx"].python()
+    if not Path(py).exists():
+        pytest.skip("mtplx env not provisioned")
+    out = subprocess.run([py, "-P", "-c", _GUARD_PROBE],
+                         env={**os.environ, "MTPLX_SYSTEM_MEMORY_ABORT_FLOOR_BYTES": "1GiB", **env_extra},
+                         capture_output=True, text=True, timeout=120)
+    assert "NOT applied" not in out.stderr, out.stderr
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def test_mtplx_stock_guard_aborts_the_swap_from_compressor_cases():
+    # documents why the patch exists: stock MTPLX refuses these healthy prefills
+    got = _run_guard_probe({})
+    assert got["swap_from_compressor"] and got["swap_from_compressor_2"]
+
+
+def test_mtplx_net_swap_patch_spares_compressor_moves_but_keeps_real_signatures():
+    m = ModelConfig(name="m", source="s", backend="mtplx")
+    got = _run_guard_probe(m.resolve_backend().env_vars(m))
+    assert got["swap_from_compressor"] is False
+    assert got["swap_from_compressor_2"] is False
+    assert got["swap_and_compressor_grow"] is True
+    assert got["swap_only_fast"] is True
